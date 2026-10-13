@@ -1,0 +1,14 @@
+node_modules
+dist
+data
+.env
+.env.*
+.git
+*.log
+test-results
+docs/team
+
+# Nested deployment credentials never enter the Docker build context.
+**/.env
+**/.env.*
+**/backups

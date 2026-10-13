@@ -1,0 +1,27 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+test-results/
+.DS_Store
+
+# Public deployment template is safe; runtime secrets remain ignored.
+!deploy/.env.public.example
+deploy/backups/
+
+# Keep runtime data, backups and private signing material out of source control.
+backups/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.key
+*.pem
+*.p12
+*.pfx

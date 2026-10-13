@@ -1,0 +1,24 @@
+{
+	# No public or local admin API is required for this deployment.
+	admin off
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# Caddy is the only proxy. Do not put a CDN or another proxy in front
+	# without separately reviewing the client-IP trust model.
+	reverse_proxy funding:8787 {
+		header_up Host {$APP_DOMAIN}
+		header_up X-Forwarded-Host {$APP_DOMAIN}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-Proto https
+		header_up -Forwarded
+
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 45s
+		}
+	}
+}

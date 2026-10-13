@@ -1,0 +1,107 @@
+# Run from the project root with the explicit --env-file and -f arguments.
+# Single server / single funding instance only. Keep these volume names stable.
+name: perpdock-public
+
+services:
+  funding:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: perpdock-funding:public
+    command: ["sh", "-c", "node scripts/check-public-env.mjs && exec node dist/server/index.js"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      APP_NAME: Perpex
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN to your registered DNS hostname}
+      PUBLIC_ORIGIN: https://${APP_DOMAIN:?Set APP_DOMAIN to your registered DNS hostname}
+      HOST: 0.0.0.0
+      PORT: "8787"
+      DATA_DIR: /app/data
+      TRUST_PROXY_HOPS: "1"
+      ORDER_TOKEN_SECRET: ${ORDER_TOKEN_SECRET:?Set a stable high-entropy ORDER_TOKEN_SECRET}
+      RELAY_API_KEY: ${RELAY_API_KEY:-}
+      TRONGRID_API_KEY: ${TRONGRID_API_KEY:-}
+      ETHEREUM_RPC_URL: ${ETHEREUM_RPC_URL:-https://ethereum.publicnode.com}
+      ARBITRUM_RPC_URL: ${ARBITRUM_RPC_URL:-https://arbitrum-one.publicnode.com}
+      BASE_RPC_URL: ${BASE_RPC_URL:-https://base.drpc.org}
+      OPTIMISM_RPC_URL: ${OPTIMISM_RPC_URL:-https://optimism.publicnode.com}
+      POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}
+      BNB_RPC_URL: ${BNB_RPC_URL:-https://bsc-rpc.publicnode.com}
+      PAUSE_NEW_ORDERS: ${PAUSE_NEW_ORDERS:-true}
+      MIN_AMOUNT: ${MIN_AMOUNT:-10}
+      MAX_AMOUNT: ${MAX_AMOUNT:-100}
+    # No host port. Only Caddy on the dedicated network reaches the application.
+    networks:
+      - application
+    volumes:
+      - funding-data:/app/data
+      - type: bind
+        source: ${BACKUP_DIR:-/var/backups/perpdock}
+        target: /backups
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      funding:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN to your registered DNS hostname}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    networks:
+      - application
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  application:
+    driver: bridge
+
+volumes:
+  funding-data:
+    name: perpdock-public-funding-data
+  caddy-data:
+    name: perpdock-public-caddy-data
+  caddy-config:
+    name: perpdock-public-caddy-config

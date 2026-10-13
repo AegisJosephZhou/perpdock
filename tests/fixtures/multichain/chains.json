@@ -1,0 +1,100 @@
+{
+  "chains": [
+    {
+      "id": 1,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "ethereum",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "optimism",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 56,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "bnb",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 137,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "polygon",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 1337,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "hypevm",
+      "protocol": {
+        "v2": {
+          "chainId": "hyperliquid",
+          "depository": "0x66cf0aace1b4e562593bec10ec7868fba9932224"
+        }
+      }
+    },
+    {
+      "id": 8453,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "base",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 42161,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "arbitrum",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 728126428,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "tvm",
+      "protocol": {
+        "v2": {
+          "chainId": "tron",
+          "depository": "TXtEs6t2oUWQsNos7m68gbHdE9Q5n6x2oN"
+        }
+      }
+    }
+  ]
+}
