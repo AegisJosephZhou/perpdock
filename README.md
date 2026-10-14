@@ -1,5 +1,7 @@
 # Perpex · HL Funding
 
+**新会话 / 项目交接（2026-10-14）：先读 [交接入口](docs/SESSION-HANDOFF.md)。** 完整需求见 [需求总表](docs/PROJECT-REQUIREMENTS.md)，当前实际进度与下一步见 [状态表](docs/PROJECT-STATUS.md)，X 推广与线索见 [市场记录](docs/market/MARKET-STATUS.md)，钱包调研见 [研究索引](docs/research/RESEARCH-INDEX.md)。历史软件测试、真人资金验收、部署与商业验证分别记录；免 Gas 和平台收费尚未实现。
+
 七个网络、九条审核稳定币路线 → 用户指定 Hyperliquid 默认 Perps USDC 账户的非托管入金应用。默认 Ethereum USDT，另含原生 USDC、Arbitrum USDT0、BNB Chain 映射 USDT 与 Tron USDT；详见 [场景与资产清单](docs/SCENARIO-COVERAGE.md)。
 
 前端 React + Vite，后端 Node/Express，SQLite 持久化。实时报价与跨链结算接入 Relay；对应 EVM 来源链的最终确认交易、Tron 固化交易及 Hyperliquid 账本用于独立核验。生产代码不返回模拟报价、余额或虚构到账状态。服务端不保管用户私钥，也不代用户转账。
