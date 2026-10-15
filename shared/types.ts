@@ -19,10 +19,19 @@ export interface Quote {
 }
 export interface Evidence { type: string; reference: string }
 export interface OrderEvent { at: string; status: OrderStatus; message: string }
+export interface TrackingCheck {
+  /** Server time when the latest source/route check finished, not a funds timestamp. */
+  attemptedAt: string;
+  /** Last successfully completed check, including valid pending/attention results. */
+  succeededAt?: string;
+  result: 'ok' | 'unavailable';
+}
 export interface Order {
   id: string; createdAt: string; updatedAt: string; quote: Quote; status: OrderStatus;
   sourceTxHash?: string; destinationTxHash?: string; providerOrderId?: string;
   creditedAmount?: string; statusMessage: string; events: OrderEvent[]; evidence?: Evidence[];
+  /** Absent on legacy or never-checked orders; updatedAt is not a substitute. */
+  trackingCheck?: TrackingCheck;
 }
 /** Server-only provider state. Must never originate from browser input. */
 export type ProviderData = Record<string, unknown>;

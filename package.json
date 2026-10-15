@@ -16,7 +16,8 @@
     "test:watch": "vitest --configLoader runner",
     "test:live": "tsx scripts/live-smoke.ts",
     "test:production": "node scripts/production-smoke.mjs",
-    "test:deployment": "node --test tests/public-deployment.test.mjs"
+    "test:deployment": "node --test tests/public-deployment.test.mjs tests/public-deployment-check.test.mjs",
+    "verify:deployment": "node scripts/verify-public-deployment.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

@@ -3,10 +3,11 @@ import { formatUnits, isAddress, parseUnits } from 'viem';
 import type { Account, AppConfig, Order, OrderStatus, Quote, Route } from '../shared/types.js';
 import { api, errorMessage, loadSavedOrders, persistSavedOrder, readLocalPaymentState, savedOrderForPayment, STORAGE_KEY, SUBMISSION_PREFIX, type SavedOrder } from './api.js';
 import { executeOrderPayment } from './payment.js';
+import GaslessReadiness from './GaslessReadiness.js';
+import OrderProgress from './OrderProgress.js';
 import { approveExact, connectEvm, connectTron, evmProvider, getAllowance, getEvmChain, listEvmWallets, preflightPayment, sendPayment, sourceBalance, sourceNativeBalance, switchEvmChain, validateQuoteContext, walletAddressEquals } from './wallets.js';
 
 const labels: Record<OrderStatus, string> = { awaiting_signature: '等待钱包签名', source_pending: '确认源链付款', bridging: '兑换与跨链处理中', verifying_credit: '核验合约账户入账', completed: '已核实到账', attention: '需要进一步核查', expired: '报价已过期' };
-const flow: OrderStatus[] = ['source_pending', 'bridging', 'verifying_credit', 'completed'];
 const brief = (address: string) => address.length > 20 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
 const time = (date: string) => new Date(date).toLocaleString('zh-CN', { hour12: false });
 function SymbolIcon({ kind = 'arrow' }: { kind?: 'arrow' | 'wallet' | 'shield' | 'refresh' }) {
@@ -65,6 +66,9 @@ export default function App() {
   const [connectedTick, setConnectedTick] = useState(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [orderReadTick, setOrderReadTick] = useState(0);
+  const [orderReadIssue, setOrderReadIssue] = useState<{ id: string; message: string; kind: 'read' | 'refresh'; check?: string }>();
+  const orderReadVersion = useRef(0);
+  const refreshingOrder = useRef(false);
   const quoteRequest = useRef(0);
   const actionInFlight = useRef(false);
   const creationKey = useRef<{ quoteId: string; key: string } | undefined>(undefined);
@@ -182,12 +186,22 @@ export default function App() {
     let active = true; let nextRead: ReturnType<typeof setTimeout> | undefined;
     const read = async () => {
       let terminal = false;
+      const version = orderReadVersion.current;
       try {
-        const latest = await readOrder(credential);
-        if (!active) return;
-        terminal = hasVerifiedCredit(latest);
-        setOrder(latest); setRouteId(latest.quote.routeId); setAmount(latest.quote.amount); setRecipient(latest.quote.recipient);
-      } catch (err) { if (active) setError(errorMessage(err)); }
+        if (!refreshingOrder.current) {
+          const latest = await readOrder(credential);
+          if (!active) return;
+          if (version === orderReadVersion.current) {
+            terminal = hasVerifiedCredit(latest);
+            setOrderReadIssue(current => current?.id === latest.id && current.kind === 'refresh'
+              && current.check === JSON.stringify(latest.trackingCheck) && !terminal ? current : undefined);
+            setOrder(latest); setRouteId(latest.quote.routeId); setAmount(latest.quote.amount); setRecipient(latest.quote.recipient);
+          }
+        }
+      } catch (err) {
+        if (active && version === orderReadVersion.current) setOrderReadIssue(current => current?.id === credential.id && current.kind === 'refresh'
+          ? current : { id: credential.id, message: errorMessage(err), kind: 'read' });
+      }
       if (active && !terminal) nextRead = setTimeout(() => void read(), 6_000);
     };
     void read();
@@ -354,10 +368,31 @@ export default function App() {
       remember({ ...credential, submission: { state: 'submitted', txHash: value } }); setOrder(next); setReceiptHash(''); setNotice('交易凭证已上报，后台将独立核验。');
     });
   }
+  async function refreshOrder() {
+    if (!credential || !online) return;
+    const saved = credential;
+    await operation('refresh', async () => {
+      // In-flight GETs contain snapshots from before this explicit verification.
+      // Do not let a late snapshot roll back its result or clear a fresh error.
+      orderReadVersion.current++;
+      refreshingOrder.current = true;
+      orderReads.current.delete(JSON.stringify([saved.id, saved.accessToken]));
+      try {
+        const next = await api.refresh(saved.id, saved.accessToken);
+        if (next.id !== saved.id) throw new Error('订单身份不符');
+        setOrder(next); setOrderReadIssue(undefined); setBalanceTick((n) => n + 1);
+      } catch (err) {
+        setOrderReadIssue({ id: saved.id, message: errorMessage(err), kind: 'refresh', check: JSON.stringify(order?.trackingCheck) });
+      } finally {
+        refreshingOrder.current = false;
+        setOrderReadTick((n) => n + 1);
+      }
+    });
+  }
   function startNew() {
     if (actionInFlight.current || intentBlocked || (paymentAttempted && !isCredited)) return;
     quoteRequest.current++; setHistoryOpen(false); creationKey.current = undefined;
-    setCredential(undefined); setOrder(undefined); setQuote(undefined); setAllowance(undefined); setRecipientConfirmed(false); setDifferentConfirmed(false); setError(''); setNotice(''); setReceiptHash('');
+    setOrderReadIssue(undefined); setCredential(undefined); setOrder(undefined); setQuote(undefined); setAllowance(undefined); setRecipientConfirmed(false); setDifferentConfirmed(false); setError(''); setNotice(''); setReceiptHash('');
   }
   function chooseAmount(percent: number) {
     if (actionInFlight.current || order || balance === undefined || !route || !config) return;
@@ -368,7 +403,7 @@ export default function App() {
   function openSaved(item: SavedOrder) {
     if (actionInFlight.current) return;
     quoteRequest.current++;
-    setOrder(undefined); setCredential(item); setQuote(undefined); setAllowance(undefined);
+    setOrderReadIssue(undefined); setOrder(undefined); setCredential(item); setQuote(undefined); setAllowance(undefined);
     setError(''); setNotice(''); setRecipientConfirmed(false); setDifferentConfirmed(false); setReceiptHash(''); setHistoryOpen(false); setOrderReadTick((value) => value + 1);
   }
   function toggleHistory(open: boolean) { if (!actionInFlight.current) setHistoryOpen(open); }
@@ -380,7 +415,7 @@ export default function App() {
 
   const quoteSeconds = shownQuote ? Math.max(0, Math.ceil((Date.parse(shownQuote.expiresAt) - clock) / 1000)) : 0;
   const mayCreate = !busy && !restoring && !intentBlocked && !walletCapabilityMissing && !!route?.available && !!source && networkReady && isAddress(recipient) && confirmed && !!amount && !config?.paused;
-  const currentStep = orderStatus ? flow.indexOf(orderStatus) : -1;
+  const currentOrderReadError = orderReadIssue?.id === credential?.id ? orderReadIssue?.message : undefined;
   const progressTitle = isCredited ? '已核实到账' : localHash && !order?.sourceTxHash ? '交易编号已保留，等待核验' : credential?.submission?.state === 'signing' && !order?.sourceTxHash ? '等待钱包付款结果' : credential?.submission?.state === 'unknown' && !order?.sourceTxHash ? '付款结果待核查' : orderStatus ? labels[orderStatus] : '恢复订单中';
 
   return <div className="app-shell">
@@ -402,6 +437,7 @@ export default function App() {
       {(pendingPayments.length > 0 || recoveryProblem) && <section className="message warning pending-payments" aria-label="待核查付款提醒"><strong>请先核查已有付款</strong><p>{recoveryProblem || '此浏览器存在未结清的付款。可以查看历史，但不能另建订单或再次付款。'}</p>{pendingPayments.map((item) => <button key={item.id} className="text-button" disabled={!!busy} onClick={() => openSaved(item)}>返回待核查订单 {brief(item.id)} ↗</button>)}<button className="text-button" disabled={!!busy || !online || auditing} onClick={() => { setRecoveryTick((n) => n + 1); setOrderReadTick((n) => n + 1); }}>重新核查本机订单</button></section>}
       {walletCapabilityMissing && <div className="message warning" role="status">当前浏览器缺少安全付款能力。请使用支持 Web Locks 的新版浏览器，通过 HTTPS 打开；手机需在提供钱包注入接口的浏览器内验证兼容性。</div>}
       {error && <div className="message error" role="alert"><strong>操作需要留意</strong><p>{error}</p></div>}
+      {currentOrderReadError && <div className="message error" role="alert"><strong>暂时无法读取最新订单</strong><p>{currentOrderReadError}</p></div>}
       {notice && <div className="message success" role="status">{notice}</div>}
       {historyOpen ? <section className="history-panel card" aria-label="本机订单列表">
         <div className="panel-heading"><h2>最近的订单</h2><span>{savedOrders.length} 笔</span></div>
@@ -413,10 +449,7 @@ export default function App() {
           <div className="receive-label">{isCredited ? '实际到账' : '预计到账'}</div><div className="hero-amount mono">{isCredited ? order.creditedAmount : order.quote.expectedReceive}<span>USDC</span></div>
           <p>来自 <strong>{order.quote.amount} {route?.symbol || '源资产'}</strong>{route ? ` · ${route.sourceChain}` : ''}</p><div className={`status-badge ${isCredited ? 'success' : orderStatus === 'attention' || credential?.submission?.state === 'unknown' ? 'warning' : ''}`}>{progressTitle}</div>
         </section>
-        <section className="card progress-card" aria-label="订单核验进度">
-          <div className="vertical-steps">{['确认源链付款', '路由处理中', '核验 HL 入账'].map((label, index) => <div className={`progress-step ${isCredited || currentStep > index ? 'done' : currentStep === index || index === 0 && orderStatus === 'awaiting_signature' ? 'active' : ''}`} key={label}><div className="step-track"><span>{isCredited || currentStep > index ? '✓' : index + 1}</span></div><div><h2>{label}</h2><p>{isCredited || currentStep > index ? '已核验' : currentStep === index ? ['等待源链交易确认，尚不代表到账。', '来源付款已核实，正在处理兑换与跨链。', '按本单交易核对目标账户入账凭证。'][index] : index === 0 && orderStatus === 'awaiting_signature' ? '请先检查钱包中的签名与付款结果。' : '等待前一步完成'}</p></div></div>)}</div>
-          <div className="order-message"><p>{order.status === 'completed' && !isCredited ? '到账证据或实际入账金额尚不完整，继续核验中。' : localHash && !order.sourceTxHash ? '已保留交易编号，请继续核验。签名窗口到期不代表这笔付款失败。' : order.statusMessage}</p>{order.quote.warnings.map((warning, index) => <p className="quote-warning" key={index}>{warning}</p>)}<small>最近更新 {time(order.updatedAt)}</small></div>
-        </section>
+        <OrderProgress order={order} credited={isCredited} now={clock} online={online} readError={currentOrderReadError} localHash={localHash}/>
         {progress && <div className="working" role="status"><span className="spinner"/>{progress}</div>}
         {credential?.submission && !order.sourceTxHash && <section className="recovery-box" aria-label="恢复付款"><h2>继续核验这笔付款</h2><p>{localHash ? '交易编号已保留。继续核验会重新上报同一笔交易，不会再次付款。' : '签名阶段的付款结果尚不确定。请检查钱包交易记录；当前订单已阻止再次付款。'}</p>{localHash ? <button className="secondary full" disabled={!!busy} onClick={() => void report(localHash)}>继续核验已提交交易</button> : <div className="recovery-input"><label htmlFor="recovery-hash">钱包中的源链交易编号</label><input id="recovery-hash" className="mono" aria-label="恢复源链交易编号" placeholder="粘贴完整交易编号" value={receiptHash} onChange={(event) => setReceiptHash(event.target.value)}/><button className="secondary full" disabled={!!busy || !receiptHash} onClick={() => void report(receiptHash)}>上报凭证</button></div>}</section>}
         <section className="card order-receipt"><div className="panel-heading"><h2>本笔资金信息</h2><button className="text-button" onClick={downloadReceipt}>下载凭证 ↓</button></div><dl className="receipt-list"><div><dt>收款账户</dt><dd>Hyperliquid 默认 Perps</dd></div><div className="stack"><dt>付款地址</dt><dd className="mono">{order.quote.sourceAddress}</dd></div><div className="stack"><dt>完整 HL 接收地址</dt><dd className="mono">{order.quote.recipient}</dd></div><div className="stack"><dt>订单编号</dt><dd className="mono">{order.id}</dd></div>{(order.sourceTxHash || localHash) && <div className="stack"><dt>源链交易编号</dt><dd className="mono">{explorer(route, order.sourceTxHash || localHash!) ? <a href={explorer(route, order.sourceTxHash || localHash!)} target="_blank" rel="noreferrer">{order.sourceTxHash || localHash} ↗</a> : order.sourceTxHash || localHash}</dd></div>}<div><dt>最低到账</dt><dd>{order.quote.minReceive} USDC</dd></div></dl>
@@ -424,7 +457,7 @@ export default function App() {
           {!!order.evidence?.length && <details className="evidence"><summary>链上与账户凭证（{order.evidence.length}）</summary>{order.evidence.map((item, index) => <div key={index}><strong>{item.type}</strong><span className="mono">{item.reference}</span></div>)}</details>}
         </section>
         <div className="restore-note"><SymbolIcon kind="shield"/><p>可关闭页面，并在此浏览器的订单记录恢复。进度停留时请保留订单与交易编号，继续核验；不要重复付款。</p></div>
-        <div className="page-actions"><button className={isCredited ? 'secondary full' : 'primary full'} disabled={!!busy || !credential} onClick={() => void operation('refresh', async () => { if (credential) { setOrder(await api.refresh(credential.id, credential.accessToken)); setBalanceTick((n) => n + 1); } })}><SymbolIcon kind="refresh"/>刷新订单核验</button>{isCredited && <button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>开始新入金<SymbolIcon/></button>}</div>
+        <div className="page-actions"><button className={isCredited ? 'secondary full' : 'primary full'} disabled={!!busy || !credential || !online} onClick={() => void refreshOrder()}><SymbolIcon kind="refresh"/>刷新订单核验</button>{isCredited && <button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>开始新入金<SymbolIcon/></button>}</div>
       </> : <>
         <div className="transfer-cards">
           <section className="card source-card" aria-label="付款信息">
@@ -439,6 +472,7 @@ export default function App() {
             {order && source && !correctWallet && <p className="field-warning">请连接本订单付款账户：<span className="mono">{order.quote.sourceAddress}</span></p>}
             {balanceError && <p className="field-warning">余额暂未读取：{balanceError}</p>}
             {config && <p className="field-help">单笔 {config.limits.minAmount}–{config.limits.maxAmount} {route?.symbol || ''}。{route?.walletType === 'tron' ? '另需 TRX 支付链上资源费用。' : `另需 ${gasSymbol} 支付 ${sourceNetwork}授权与付款手续费。`}</p>}
+            {route?.walletType === 'evm' && source && networkReady && <GaslessReadiness key={`${route.id}:${source}:${connectedTick}`} route={route} source={source} disabled={!!busy || !online || paymentAttempted}/>}
             {route?.walletType === 'evm' && source && <div className="native-balance" aria-label="网络手续费余额"><span>手续费余额</span><strong className="mono">{nativeBalance !== undefined ? `${nativeBalance} ${gasSymbol}` : nativeError ? '暂无法读取' : '读取中…'}</strong>{nativeZero ? <p className="field-warning">当前没有 {gasSymbol} 支付链费。请向自己的付款钱包补充后刷新；暂不能授权或付款。</p> : <p className="field-help">{nativeError || '非零余额不代表足够支付全部操作，签名前还会按本笔交易检查费用。'}</p>}</div>}
             {route && !route.available && <p className="field-warning">{route.reason || '此路线暂不可用。'}</p>}
             {config && !config.routes.some((item) => item.available) && <p className="field-warning">当前没有可接受资金的路线，请稍后重试。</p>}

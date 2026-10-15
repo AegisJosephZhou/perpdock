@@ -256,3 +256,17 @@ dt small { display: block; font-size: 10px; margin-top: 3px; line-height: 1.65; 
   .primary.full>svg:last-child { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } .spinner { animation: none; } }
+.gasless-readiness { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.gasless-readiness summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.gasless-readiness .field-help { line-height: 1.65; }
+
+.confirmed-progress { display:flex; flex-direction:column; gap:7px; margin-bottom:24px; padding-bottom:20px; border-bottom:1px solid var(--border); }
+.confirmed-progress > span, .confirmed-progress small { color:var(--muted, #66746e); font-size:12px; }
+.confirmed-progress strong { font-size:16px; line-height:1.6; }
+.query-freshness { display:flex; flex-direction:column; gap:7px; padding-top:8px; line-height:1.6; }
+.query-freshness > span { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; }
+.query-freshness strong { font-weight:500; }
+.query-freshness small { color:var(--muted, #66746e); font-size:11px; }
+.progress-query-warning { padding:12px 14px; margin:14px 0 0; border-radius:10px; background:#fff7e5; color:#805d15; font-size:12px; line-height:1.8; }
+
+.progress-step p { color:var(--muted); }

@@ -1,4 +1,4 @@
-# HTTP 与模块合同（v0.1 / rc5）
+# HTTP 与模块合同（v0.1，2026-10-15更新）
 
 所有金额为十进制字符串，不用 float 计算金额。时间为 ISO8601。错误 JSON: {error:{code,message,requestId}}，不得泄露堆栈或上游凭据。
 
@@ -16,7 +16,7 @@
 Route {id,label,sourceChain,sourceChainId:number,sourceToken,symbol,decimals,walletType:"evm"|"tron",available:boolean,reason?:string,gasSymbol?:string,assetNote?:string}
 Quote {id,routeId,sourceAddress,recipient,amount,amountBaseUnits,expectedReceive,minReceive,expiresAt,provider,fees: {label,amount?,symbol,description?}[],estimatedSeconds?:number,protocolOrderId?:string,transaction: WalletTransaction,approval?:{token,spender,amount},warnings:string[]}
 WalletTransaction {kind:"evm",chainId:number,to:string,data:string,value:string} | {kind:"tron",transaction:unknown,contractAddress?:string}
-Order {id,createdAt,updatedAt,quote:Quote,status:"awaiting_signature"|"source_pending"|"bridging"|"verifying_credit"|"completed"|"attention"|"expired",sourceTxHash?:string,destinationTxHash?:string,providerOrderId?:string,creditedAmount?:string,statusMessage:string,events:{at,status,message}[],evidence?:{type:string,reference:string}[]}
+Order {id,createdAt,updatedAt,quote:Quote,status:"awaiting_signature"|"source_pending"|"bridging"|"verifying_credit"|"completed"|"attention"|"expired",sourceTxHash?:string,destinationTxHash?:string,providerOrderId?:string,creditedAmount?:string,statusMessage:string,trackingCheck?:{attemptedAt:string,succeededAt?:string,result:"ok"|"unavailable"},events:{at,status,message}[],evidence?:{type:string,reference:string}[]}
 
 ## 路线与资金绑定
 
@@ -39,3 +39,10 @@ Order {id,createdAt,updatedAt,quote:Quote,status:"awaiting_signature"|"source_pe
 EVM签名前预检真实token余额、原生余额及当次估费；不足/未知先停下，实际费用由钱包确认。USDC按exact策略，USDT类按白名单reset-if-needed策略；无无限授权。所有钱包事件/余额/交易固定同一provider，切链后实读核对。手机普通浏览器没有注入接口时仅给指引，无假WalletConnect连接。
 
 当前真实用户签名、各手机钱包资金验收与公网部署尚未完成，协议合同不代表该项已验收。
+
+
+## 2026-10-15 查询新鲜度补充
+
+公开Order新增可选 `trackingCheck:{attemptedAt,succeededAt?,result:"ok"|"unavailable"}`，语义见[API](API.md#订单核验查询时间2026-10-15)。该字段由OrderService写入并通过原JSON订单持久化，不需要数据库迁移，不能接收客户端或provider自带时间覆盖。旧订单不补造时间。
+
+客户端分别展示已确认资金步骤和最新成功查询时间。GET或手动查询失败保留原资金事实；手动核验失败不能被相同旧记录的GET消除。显式核验开始前的迟到GET不得覆盖其新结果；切换订单隔离旧响应。仅完整验证到账证据可显示完成并解除未结清付款保护。

@@ -49,3 +49,17 @@ EVM 报价不把供应商 `timeEstimate=1` 当成总到账时长，不返回该�
 后台会在重启后恢复在途跟踪。客户端无需持续在线；连接失败后应查询原订单，不能自动再发一笔付款。
 
 服务端RPC运营配置为 `ETHEREUM_RPC_URL`、`ARBITRUM_RPC_URL`、`BASE_RPC_URL`、`OPTIMISM_RPC_URL`、`POLYGON_RPC_URL`、`BNB_RPC_URL`，默认公开端点见env样例；运行值不进入客户端。新报价先核对链、finalized、合约代码与token decimals，成功缓存60秒、失败15秒；单token/网络失败独立关闭其路线。旧单跟踪继续严格核验。请求体不存在自选RPC字段；不记录带令牌的URL。软件和只读联调不代替用户实际签名/到账验收，当前尚未公网部署。
+
+
+## 订单核验查询时间（2026-10-15）
+
+`Order.trackingCheck?: { attemptedAt: string; succeededAt?: string; result: "ok" | "unavailable" }` 为服务器写入的可选字段，兼容已有订单；时间均为ISO8601。
+
+- `attemptedAt`：最近一次实际来源/路由状态查询结束时间。
+- `succeededAt`：最近一次成功完成该查询的时间，失败保留之前的值；从未成功则缺省。
+- `result="ok"`：取得并处理了查询结果，包括仍pending或明确attention。**不表示资金到账。**
+- `result="unavailable"`：最新查询未完成，保留已确认资金步骤；不能推断转账失败或自动重付。
+
+纯GET恢复、没有来源hash、已核实完成订单的刷新不会生成新查询时间。成功接受hash的来源核验会记录实际查询；被拒绝的无关hash不会覆盖本单记录。`updatedAt`只是订单记录写入时间，不能代替最后成功查询时间。历史字段缺省须显示未知；浏览器成功取回旧Order不代表后端刚重新查链。
+
+低于历史已确认阶段的供应商结果不会回退资金步骤，但会刷新查询元数据并明确结果不一致。到账仍使用原按单金额、目标hash与HyperCore证据校验；本字段不参与付款权限。

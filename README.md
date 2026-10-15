@@ -1,6 +1,6 @@
 # Perpex · HL Funding
 
-**新会话 / 项目交接（2026-10-14）：先读 [交接入口](docs/SESSION-HANDOFF.md)。** 完整需求见 [需求总表](docs/PROJECT-REQUIREMENTS.md)，当前实际进度与下一步见 [状态表](docs/PROJECT-STATUS.md)，X 推广与线索见 [市场记录](docs/market/MARKET-STATUS.md)，钱包调研见 [研究索引](docs/research/RESEARCH-INDEX.md)。历史软件测试、真人资金验收、部署与商业验证分别记录；免 Gas 和平台收费尚未实现。
+**新会话 / 项目交接（2026-10-15）：先读 [交接入口](docs/SESSION-HANDOFF.md)。** 完整需求见 [需求总表](docs/PROJECT-REQUIREMENTS.md)，当前实际进度与下一步见 [状态表](docs/PROJECT-STATUS.md)，X 推广与线索见 [市场记录](docs/market/MARKET-STATUS.md)，钱包调研见 [研究索引](docs/research/RESEARCH-INDEX.md)。历史软件测试、真人资金验收、部署与商业验证分别记录；免 Gas 和平台收费尚未实现。
 
 七个网络、九条审核稳定币路线 → 用户指定 Hyperliquid 默认 Perps USDC 账户的非托管入金应用。默认 Ethereum USDT，另含原生 USDC、Arbitrum USDT0、BNB Chain 映射 USDT 与 Tron USDT；详见 [场景与资产清单](docs/SCENARIO-COVERAGE.md)。
 
@@ -8,9 +8,9 @@
 
 ## 当前验收状态
 
-rc5 本轮实现多链资产、钱包选择、Gas预检、手机/交易所指引、离线恢复及全本机未结清付款保护。最终软件测试、真实只读联调与审查证据见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。测试中的RPC替身只在tests，生产运行没有模拟备用报价。用户本人钱包签名和资金到账验收尚未执行，域名/公网服务也未部署。市场发布仍需目标环境与本人小额验收。
+本次提交包含 rc5 基础功能以及10月14–15日研发增量：只读钱包能力检查、暂停 HTTPS 环境检查器、订单已确认步骤、独立查询时间、失败恢复与迟到响应防护。10月15日 **462/462 应用测试、40/40 部署工具离线测试、TypeScript与构建通过**；10月14日九路线主网只读联调为历史证据，本日未重跑。详见 [验收记录](docs/ACCEPTANCE.md)。推送结果以远端提交为准。真人钱包签名、资金到账和目标公网部署仍未验收。
 
-“只持有 U，无需准备原生手续费币”及 Perpex 平台收费目前仅完成 [实施设计](docs/GASLESS-PLAN.md)，尚未接入或启用。当前代码仍要求用户具备对应来源链的 Gas 或资源；上游报价中的费用不代表 Perpex 已有收费收入。
+“只持有 U，无需准备原生手续费币”及 Perpex 平台收费目前完成 [实施设计](docs/GASLESS-PLAN.md) 和只读钱包能力检查，实际代付与收费尚未接入或启用。当前代码仍要求用户具备对应来源链的 Gas 或资源；上游报价中的费用不代表 Perpex 已有收费收入。
 
 
 **给外部服务器/DNS团队：先读 [上线交接入口](docs/DEPLOYMENT-HANDOFF.md)。** 用户已有 perpex.ai，建议子域名 deposit.perpex.ai 待管理员配置；先提供暂停新入金的 HTTPS 环境，再让用户在自己的设备签名测试。
@@ -27,7 +27,7 @@ rc5 本轮实现多链资产、钱包选择、Gas预检、手机/交易所指引
 
 ```sh
 npm ci
-cp .env.example .env
+test ! -e .env && cp .env.example .env
 npm run build
 npm start
 ```
@@ -51,7 +51,7 @@ npm audit --omit=dev
 npm run test:production
 ```
 
-自动化测试的历史样本仅在 `tests/fixtures`，不会被生产 API 作为备用数据返回。完整 Relay settlement SDK 和 TronWeb 仅用于协议差分/钱包编码测试，不进入生产依赖。生产依赖审计为 0 个已知漏洞；全量开发依赖审计有 12 项已知问题（6 高、6 中），集中在测试 SDK 的传递依赖，详见验收记录。禁止以 `npm audit fix --force` 盲目降级协议 SDK。
+自动化测试的历史样本仅在 `tests/fixtures`，不会被生产 API 作为备用数据返回。完整 Relay settlement SDK 和 TronWeb 仅用于协议差分/钱包编码测试，不进入生产依赖。2026-10-12历史审计记录为生产依赖0个已知漏洞、开发依赖12项（6高、6中，集中在测试SDK的传递依赖）；10月15日未重新查询依赖审计，详见验收记录。禁止以 `npm audit fix --force` 盲目降级协议 SDK。
 
 ## 支持范围
 
@@ -75,3 +75,10 @@ npm run test:production
 见 [docs/OPERATIONS.md](docs/OPERATIONS.md) 与 [docs/API.md](docs/API.md)。用户测试前设置稳定密钥、真实服务凭据、HTTPS入口和持久化备份。请勿清理含在途订单的数据卷。
 
 团队的接口约定、工作记录和代码审查意见全部保存在 [docs/team](docs/team/TEAM.md)。
+
+## 研发记录
+
+- [2026-10-14](docs/CONTINUATION-2026-10-14.md)：只读钱包能力检查、暂停 HTTPS 环境检查器。
+- [2026-10-15](docs/CONTINUATION-2026-10-15.md)：订单已确认进度、trackingCheck查询时间、失败恢复与迟到响应隔离。
+
+真实 Gasless 执行、平台收费、目标 HTTPS 和用户资金验收仍未完成。市场判断见 [公开发现汇总](docs/market/evidence/FINDINGS-2026-10-15.md)：明确报名0，客户和付费需求尚未验证。

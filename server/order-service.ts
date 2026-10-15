@@ -1,4 +1,4 @@
-import type { AppConfig, Evidence, Order, OrderStatus, ProviderAdapter, Quote, QuoteRequest, StoredQuote, TrackingUpdate } from '../shared/types.js';
+import type { AppConfig, Evidence, Order, OrderStatus, ProviderAdapter, Quote, QuoteRequest, StoredQuote, TrackingCheck, TrackingUpdate } from '../shared/types.js';
 import { AppError, decimalUnits, hashSecret, newId, normalizeTxHash, orderToken, verifyToken } from './security.js';
 import { Store } from './store.js';
 
@@ -30,6 +30,11 @@ export class OrderService {
     return promise;
   }
   private timestamp(): string { return new Date(this.now()).toISOString(); }
+  private trackingCheck(order: Order, result: TrackingCheck['result']): TrackingCheck {
+    const attemptedAt = this.timestamp();
+    const succeededAt = result === 'ok' ? attemptedAt : order.trackingCheck?.succeededAt;
+    return { attemptedAt, ...(succeededAt ? { succeededAt } : {}), result };
+  }
   private assertOpen(): void {
     if (this.options.paused?.()) throw new AppError('FUNDING_PAUSED', '新入金订单暂时暂停；已有订单仍可查询和跟踪。', 503);
   }
@@ -136,7 +141,8 @@ export class OrderService {
       if (!verification.valid) throw new AppError('TRANSACTION_MISMATCH', verification.reason ?? '交易与该订单不匹配。', 422);
       const next = this.change(order, verification.pending ? 'source_pending' : 'bridging',
         verification.pending ? '来源交易等待可验证的最终确认；当前尚未确认资金到账。' : '来源交易已核验，正在跟踪目标资金入账。',
-        { sourceTxHash: hash, ...(verification.providerOrderId ? { providerOrderId: verification.providerOrderId } : {}) });
+        { sourceTxHash: hash, trackingCheck: this.trackingCheck(order, 'ok'),
+          ...(verification.providerOrderId ? { providerOrderId: verification.providerOrderId } : {}) });
       this.store.schedulePoll(id, this.now(), 0);
       return next;
     });
@@ -166,7 +172,11 @@ export class OrderService {
       || typeof update.statusMessage !== 'string') throw new AppError('INVALID_TRACKING_UPDATE', '上游订单状态无效。', 502);
     const highest = Math.max(...order.events.map(event => stages[event.status] ?? 0));
     const stage = stages[update.status];
-    if (stage !== undefined && stage < highest) return order;
+    if (stage !== undefined && stage < highest) {
+      // A lower-stage response is a completed read, but cannot erase confirmed
+      // facts. Replace any prior network-error message with this distinct case.
+      return this.change(order, order.status, '已取得查询结果，但与已确认进度不一致；保留原记录并继续核验，请勿重复付款。');
+    }
     const evidence = this.mergeEvidence(order.evidence, update.evidence);
     if (update.status === 'completed') {
       const destinationHash = update.destinationTxHash;
@@ -193,11 +203,14 @@ export class OrderService {
       if (!order.events.some(event => ['bridging', 'verifying_credit', 'completed'].includes(event.status))) {
         const verified = await this.provider.verifySourceTransaction(storedQuote, order.sourceTxHash);
         if (!verified.valid) {
-          order = this.change(order, 'attention', '来源交易与订单不匹配，需要核查；尚未确认入金成功。');
+          order = this.change(order, 'attention', '来源交易与订单不匹配，需要核查；尚未确认入金成功。',
+            { trackingCheck: this.trackingCheck(order, 'ok') });
           this.store.schedulePoll(id, this.now() + 5 * 60_000, 0);
           return order;
         }
         if (verified.pending) {
+          order = this.change(order, 'source_pending', '来源交易等待可验证的最终确认；当前尚未确认资金到账。',
+            { trackingCheck: this.trackingCheck(order, 'ok') });
           this.store.schedulePoll(id, this.now() + 15_000, 0);
           return order;
         }
@@ -209,6 +222,9 @@ export class OrderService {
       // Persist the cursor only after the corresponding evidence/state was
       // recorded. A crash before this write merely repeats safe read queries.
       if (update.providerDataPatch !== undefined) this.store.patchQuoteProviderData(order.quote.id, update.providerDataPatch);
+      // Freshness records a completed query, independently from funds progress.
+      // This also persists checks when state/message otherwise remain unchanged.
+      order = this.change(order, order.status, order.statusMessage, { trackingCheck: this.trackingCheck(order, 'ok') });
       this.store.schedulePoll(id, this.now() + (order.status === 'attention' ? 5 * 60_000 : 15_000), 0);
       return order;
     } catch (error) {
@@ -216,7 +232,7 @@ export class OrderService {
       this.store.schedulePoll(id, this.now() + Math.min(300_000, 5000 * 2 ** Math.min(failures, 6)), failures);
       // Unknown network/receipt state is not a failed transfer and never triggers payment or refund.
       const message = '暂时无法核验最新进度，系统会继续查询；请勿重复付款。';
-      return this.change(order, order.status, message);
+      return this.change(order, order.status, message, { trackingCheck: this.trackingCheck(order, 'unavailable') });
     }
   }
   startPolling(intervalMs = 5000): void {
