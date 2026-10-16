@@ -131,7 +131,7 @@ describe('per-chain exact source evidence', () => {
 });
 
 type RpcRequest = { method: string; params: any[] };
-function healthFetch(override?: (source: ReviewedEvmSource, body: RpcRequest, result: unknown) => unknown) {
+function healthFetch(override?: (source: ReviewedEvmSource, body: RpcRequest, result: unknown, url: string) => unknown) {
   const requests: { url: string; body: any }[] = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/chains')) return response({ chains: canonical });
@@ -140,11 +140,14 @@ function healthFetch(override?: (source: ReviewedEvmSource, body: RpcRequest, re
       const source = REVIEWED_EVM_SOURCES.find(s => s.route.sourceChainId === body.originChainId && s.route.sourceToken.toLowerCase() === body.originCurrency.toLowerCase())!;
       return response(raw(source.route.id));
     }
-    const source = REVIEWED_EVM_SOURCES.find(s => new URL(s.publicRpcUrl).href === url)!;
+    const source = REVIEWED_EVM_SOURCES.find(s => [s.publicRpcUrl, ...s.fallbackRpcUrls].some(u => new URL(u).href === url))!;
     if (!source) throw new Error('unreviewed RPC');
     const token = body.method === 'eth_call' ? REVIEWED_EVM_SOURCES.find(s => s.route.sourceChainId === source.route.sourceChainId && s.route.sourceToken.toLowerCase() === body.params[0].to.toLowerCase()) : undefined;
     const normal = body.method === 'eth_chainId' ? `0x${source.route.sourceChainId.toString(16)}` : body.method === 'eth_getCode' ? '0x60006000' : body.method === 'eth_call' ? '0x' + token!.route.decimals.toString(16).padStart(64, '0') : { number: '0x100', hash: blockHash, transactions: [] };
-    return response({ jsonrpc: '2.0', id: 1, result: override ? override(source, body, normal) : normal });
+    const value = override ? override(source, body, normal, url) : normal;
+    if (value instanceof Response) return value;
+    if (value && typeof value === 'object' && '__rpcError' in value) return response({ jsonrpc: '2.0', id: 1, error: (value as any).__rpcError });
+    return response({ jsonrpc: '2.0', id: 1, result: value });
   }));
   return requests;
 }
@@ -165,13 +168,27 @@ describe('live-RPC gate without production bypasses', () => {
       if (failure === 'wrongChain' && body.method === 'eth_chainId') return '0x1';
       if (failure === 'finalizedMissing' && body.method === 'eth_getBlockByNumber') return null;
       if (failure === 'depositoryEmpty' && body.method === 'eth_getCode') return '0x';
-      if (failure === 'rpcUnsupported' && body.method === 'eth_getBlockByNumber') throw new Error('unsupported finalized');
+      if (failure === 'rpcUnsupported' && body.method === 'eth_getBlockByNumber') return { __rpcError: { code: -32601, message: 'method not supported' } };
       return result;
     });
     const adapter = await import('../server/providers/relay.js'); const routes = await adapter.getRoutes();
     expect(routes.filter(r => !r.available).map(r => r.id)).toEqual(['bsc-usdt-hypercore']);
     await expect(adapter.getQuote(input('bsc-usdt-hypercore'))).rejects.toThrow();
     expect(vi.mocked(fetch).mock.calls.some(c => String(c[0]).endsWith('/quote/v2'))).toBe(false);
+  });
+  it('fails over to a reviewed fallback node instead of closing a route on a transient error', async () => {
+    vi.resetModules();
+    const primary = new URL(REVIEWED_EVM_SOURCES.find(s => s.route.id === 'bsc-usdt-hypercore')!.publicRpcUrl).href;
+    const calls = healthFetch((source, _body, result, url) => source.route.id === 'bsc-usdt-hypercore' && url === primary ? new Response('', { status: 429 }) : result);
+    const adapter = await import('../server/providers/relay.js'); const routes = await adapter.getRoutes();
+    expect(routes.find(r => r.id === 'bsc-usdt-hypercore')!.available).toBe(true);
+    expect(calls.some(c => new URL(c.url).href !== primary)).toBe(true);
+  });
+  it('keeps a route available when every reviewed node fails transiently', async () => {
+    vi.resetModules();
+    healthFetch((source, _body, result) => source.route.id === 'bsc-usdt-hypercore' ? new Response('', { status: 503 }) : result);
+    const adapter = await import('../server/providers/relay.js'); const routes = await adapter.getRoutes();
+    expect(routes.find(r => r.id === 'bsc-usdt-hypercore')!.available).toBe(true);
   });
   it('isolates token code/decimals failure from the other asset on the same network', async () => {
     for (const failure of ['code', 'decimals']) {

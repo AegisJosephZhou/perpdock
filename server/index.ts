@@ -35,6 +35,9 @@ const server = app.listen(port, process.env.HOST ?? '127.0.0.1', (error?: Error)
   }
   console.info(JSON.stringify({ event: 'server_started', port, production }));
   service.startPolling();
+  // Warm the reviewed RPC health cache so the first page load is not slowed by
+  // throttled public nodes. A failure is tolerated: the config route fails open.
+  void providers.getRoutes().catch(() => {});
 });
 server.requestTimeout = 30_000;
 server.headersTimeout = 15_000;

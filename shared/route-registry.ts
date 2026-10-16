@@ -8,6 +8,7 @@ export interface ReviewedEvmSource {
   protocolChain: string;
   depository: string;
   publicRpcUrl: string;
+  fallbackRpcUrls: readonly string[];
   explorerUrl: string;
   finalityWarning: string;
   approvalPolicy: 'reset-if-needed' | 'exact';
@@ -30,6 +31,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "ethereum",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://ethereum.publicnode.com",
+    "fallbackRpcUrls": ["https://eth.drpc.org", "https://1rpc.io/eth"],
     "explorerUrl": "https://etherscan.io",
     "finalityWarning": "Ethereum 最终确认及本应用入账核验可能需要约15分钟或更久，HyperCore 可能先到账，请勿重复付款。",
     "approvalPolicy": "reset-if-needed"
@@ -51,6 +53,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "ethereum",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://ethereum.publicnode.com",
+    "fallbackRpcUrls": ["https://eth.drpc.org", "https://1rpc.io/eth"],
     "explorerUrl": "https://etherscan.io",
     "finalityWarning": "Ethereum 最终确认及本应用入账核验可能需要约15分钟或更久，HyperCore 可能先到账，请勿重复付款。",
     "approvalPolicy": "exact"
@@ -72,6 +75,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "arbitrum",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://arbitrum-one.publicnode.com",
+    "fallbackRpcUrls": ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one.public.blastapi.io"],
     "explorerUrl": "https://arbiscan.io",
     "finalityWarning": "Arbitrum One 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "reset-if-needed"
@@ -93,6 +97,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "arbitrum",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://arbitrum-one.publicnode.com",
+    "fallbackRpcUrls": ["https://arb1.arbitrum.io/rpc", "https://arbitrum-one.public.blastapi.io"],
     "explorerUrl": "https://arbiscan.io",
     "finalityWarning": "Arbitrum One 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "exact"
@@ -114,6 +119,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "base",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://base.drpc.org",
+    "fallbackRpcUrls": ["https://mainnet.base.org", "https://base-mainnet.public.blastapi.io"],
     "explorerUrl": "https://basescan.org",
     "finalityWarning": "Base 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "exact"
@@ -135,6 +141,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "optimism",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://optimism.publicnode.com",
+    "fallbackRpcUrls": ["https://mainnet.optimism.io"],
     "explorerUrl": "https://optimistic.etherscan.io",
     "finalityWarning": "Optimism 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "exact"
@@ -156,6 +163,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "polygon",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://polygon-bor-rpc.publicnode.com",
+    "fallbackRpcUrls": ["https://polygon.drpc.org", "https://polygon.gateway.tenderly.co"],
     "explorerUrl": "https://polygonscan.com",
     "finalityWarning": "Polygon PoS 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "exact"
@@ -177,6 +185,7 @@ export const REVIEWED_EVM_SOURCES: readonly ReviewedEvmSource[] = [
     "protocolChain": "bnb",
     "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31",
     "publicRpcUrl": "https://bsc-rpc.publicnode.com",
+    "fallbackRpcUrls": ["https://bsc-dataseed.binance.org", "https://bsc-dataseed2.defibit.io"],
     "explorerUrl": "https://bscscan.com",
     "finalityWarning": "BNB Chain 源链最终确认及本应用入账核验可能延迟，HyperCore 可能先到账；以链上最终结果为准，请勿重复付款。",
     "approvalPolicy": "reset-if-needed"

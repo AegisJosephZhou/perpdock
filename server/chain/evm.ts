@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { decodeFunctionData, encodeFunctionData, parseAbi, parseUnits, type Hex } from 'viem';
 import type { SourceVerification, StoredQuote } from '../../shared/types.js';
-import { evmRpcUrl, evmRpc as rpc } from './evm-rpc.js';
+import { evmRpcFailover } from './evm-rpc.js';
 import { reviewedEvmSource } from '../../shared/route-registry.js';
 
 const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
@@ -32,9 +32,8 @@ export async function verifyEvmSource(quote: StoredQuote, txHash: string): Promi
     if (!same(encodeFunctionData({ abi: depositAbi, functionName: 'depositErc20', args: call.args }), expected.data)) return { valid: false, reason: `${chain} 付款调用并非规范 ABI 编码。` };
     if (expected.data.length !== 2 + 8 + 64 * 4 || !same(call.args[0], quote.sourceAddress) || !same(call.args[1], route.sourceToken) || call.args[2] !== BigInt(quote.amountBaseUnits) || !same(call.args[3], quote.protocolOrderId!)) return { valid: false, reason: `${chain} 报价付款调用未绑定本单。` };
   } catch { return { valid: false, reason: `${chain} 报价付款调用无效。` }; }
-  const url = evmRpcUrl(quote.routeId);
   const [chainId, rawTx, rawReceipt] = await Promise.all([
-    rpc(url, 'eth_chainId', []), rpc(url, 'eth_getTransactionByHash', [txHash]), rpc(url, 'eth_getTransactionReceipt', [txHash]),
+    evmRpcFailover(quote.routeId, 'eth_chainId', []), evmRpcFailover(quote.routeId, 'eth_getTransactionByHash', [txHash]), evmRpcFailover(quote.routeId, 'eth_getTransactionReceipt', [txHash]),
   ]);
   if (BigInt(quantity.parse(chainId)) !== BigInt(route.sourceChainId)) return { valid: false, reason: `RPC 返回的来源网络不是 ${chain} 主网。` };
   if (rawTx === null) return { valid: true, pending: true, reason: `等待 ${chain} 节点检索付款交易。` };
@@ -48,7 +47,7 @@ export async function verifyEvmSource(quote: StoredQuote, txHash: string): Promi
   const transfer = receipt.logs.some(log => !log.removed && same(log.address, route.sourceToken) && log.topics.length === 3 && same(log.topics[0]!, transferTopic) && same(log.topics[1]!, fromTopic) && same(log.topics[2]!, toTopic) && hash.safeParse(log.data).success && BigInt(log.data) === BigInt(quote.amountBaseUnits) && same(log.transactionHash, txHash) && same(log.blockHash, receipt.blockHash) && BigInt(log.blockNumber) === BigInt(receipt.blockNumber));
   if (!transfer) return { valid: false, reason: `未找到与本单完全匹配的 ${chain} ${route.symbol} 转账事件。` };
   const [rawFinalized, rawCanonical] = await Promise.all([
-    rpc(url, 'eth_getBlockByNumber', ['finalized', false]), rpc(url, 'eth_getBlockByNumber', [receipt.blockNumber, false]),
+    evmRpcFailover(quote.routeId, 'eth_getBlockByNumber', ['finalized', false]), evmRpcFailover(quote.routeId, 'eth_getBlockByNumber', [receipt.blockNumber, false]),
   ]);
   if (rawFinalized === null || rawCanonical === null) return { valid: true, pending: true, reason: `等待 ${chain} canonical 区块与最终确认信息。` };
   const finalized = Block.parse(rawFinalized);

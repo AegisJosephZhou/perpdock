@@ -66,8 +66,14 @@ export async function getRoutes(): Promise<Route[]> {
     config = await chains();
   } catch { return sourceConfigs.map(({ route }) => ({ ...route, available: false, reason: '无法验证 Relay 当前主网配置，暂时关闭新报价。' })); }
   return Promise.all(sourceConfigs.map(async source => {
-    try { validateSourceRegistry(source, config); if (source.route.walletType === 'evm') await assertEvmSourceHealthy(source.route.id); return { ...source.route }; }
+    try { validateSourceRegistry(source, config); }
     catch { return { ...source.route, available: false, reason: '无法验证该来源链的主网配置，暂时关闭这条路线的新报价。' }; }
+    if (source.route.walletType !== 'evm') return { ...source.route };
+    try { await assertEvmSourceHealthy(source.route.id); return { ...source.route }; }
+    catch (error) {
+      const detail = error instanceof UpstreamError ? error.code : 'EVM_HEALTH_CHECK_FAILED';
+      return { ...source.route, available: false, reason: `来源链 RPC 暂时不可用（${detail}），暂时关闭这条路线的新报价。` };
+    }
   }));
 }
 

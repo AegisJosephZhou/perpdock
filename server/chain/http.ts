@@ -3,9 +3,9 @@ export class UpstreamError extends Error {
 }
 
 /** Callers use reviewed provider URLs or operator-configured HTTPS RPCs. No visitor-supplied URL is accepted. */
-export async function fetchJson(url: string, init: RequestInit = {}): Promise<unknown> {
+export async function fetchJson(url: string, init: RequestInit = {}, timeoutMs = 15_000): Promise<unknown> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, { ...init, signal: controller.signal, redirect: 'error' });
     const reader = response.body?.getReader();
@@ -32,6 +32,6 @@ export async function fetchJson(url: string, init: RequestInit = {}): Promise<un
   } finally { clearTimeout(timer); }
 }
 
-export function postJson(url: string, body: unknown, headers: Record<string, string> = {}): Promise<unknown> {
-  return fetchJson(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+export function postJson(url: string, body: unknown, headers: Record<string, string> = {}, timeoutMs?: number): Promise<unknown> {
+  return fetchJson(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) }, timeoutMs);
 }

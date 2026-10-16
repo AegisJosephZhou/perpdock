@@ -12,22 +12,54 @@ function reviewed(routeId: string) {
   return source;
 }
 
-/** Operational configuration only. URLs are never read from requests or exposed in errors. */
-export function evmRpcUrl(routeId: string): string {
+/** Ordered reviewed nodes for a route: operator URLs (comma or space separated)
+ * first, then the reviewed public endpoint and reviewed fallbacks, deduplicated.
+ * Operational configuration only; URLs are never read from requests or exposed in errors. */
+export function evmRpcUrls(routeId: string): string[] {
   const source = reviewed(routeId);
   const env = rpcEnvironment[source.route.sourceChainId];
   if (!env) throw new UpstreamError('EVM_RPC_CONFIG', '来源链缺少审核过的 RPC 配置。', 503);
-  let url: URL;
-  try { url = new URL(process.env[env] || source.publicRpcUrl); }
-  catch { throw new UpstreamError('EVM_RPC_CONFIG', '来源链 RPC 配置无效。', 503); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new UpstreamError('EVM_RPC_CONFIG', '来源链 RPC 必须使用无 URL 凭据或片段的 HTTPS 地址。', 503);
-  return url.href;
+  const configured = (process.env[env] ?? '').split(/[\s,]+/).filter(Boolean);
+  const urls: string[] = [];
+  for (const candidate of [...configured, source.publicRpcUrl, ...source.fallbackRpcUrls]) {
+    let url: URL;
+    try { url = new URL(candidate); }
+    catch { throw new UpstreamError('EVM_RPC_CONFIG', '来源链 RPC 配置无效。', 503); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new UpstreamError('EVM_RPC_CONFIG', '来源链 RPC 必须使用无 URL 凭据或片段的 HTTPS 地址。', 503);
+    if (!urls.includes(url.href)) urls.push(url.href);
+  }
+  return urls;
 }
 
-export async function evmRpc(url: string, method: string, params: unknown[]): Promise<unknown> {
-  const envelope = z.object({ jsonrpc: z.literal('2.0'), id: z.literal(1), result: z.unknown().optional(), error: z.unknown().optional() }).parse(await postJson(url, { jsonrpc: '2.0', id: 1, method, params }));
+/** Primary node only. Callers that want redundancy use {@link evmRpcFailover}. */
+export function evmRpcUrl(routeId: string): string { return evmRpcUrls(routeId)[0]!; }
+
+/** Keyless public RPCs throttle bursts and time out under load. These upstream
+ * failures are transient and may be retried on another reviewed node; a wrong
+ * network, empty code, JSON-RPC method error or malformed result is definitive. */
+const TRANSIENT_RPC_CODES = new Set(['PROVIDER_RATE_LIMIT', 'UPSTREAM_UNAVAILABLE', 'UPSTREAM_HTTP_ERROR']);
+function isTransient(error: unknown): boolean { return error instanceof UpstreamError && TRANSIENT_RPC_CODES.has(error.code); }
+
+export async function evmRpc(url: string, method: string, params: unknown[], timeoutMs?: number): Promise<unknown> {
+  const envelope = z.object({ jsonrpc: z.literal('2.0'), id: z.literal(1), result: z.unknown().optional(), error: z.unknown().optional() }).parse(await postJson(url, { jsonrpc: '2.0', id: 1, method, params }, {}, timeoutMs));
   if (envelope.error !== undefined || !Object.hasOwn(envelope, 'result')) throw new UpstreamError('EVM_RPC_ERROR', '来源链 RPC 尚未提供可靠结果，交易状态未改变。', 503);
   return envelope.result;
+}
+
+/** Read-only failover: a transient node failure moves on to the next reviewed
+ * node; a definitive answer stops immediately so it can never be masked.
+ * `maxNodes` bounds worst-case latency for the interactive config/quote path. */
+export async function evmRpcFailover(routeId: string, method: string, params: unknown[], timeoutMs?: number, maxNodes = Infinity): Promise<unknown> {
+  let last: unknown;
+  let tried = 0;
+  for (const url of evmRpcUrls(routeId)) {
+    if (tried >= maxNodes) break;
+    tried += 1;
+    try { return await evmRpc(url, method, params, timeoutMs); }
+    catch (error) { last = error; if (!isTransient(error)) throw error; }
+  }
+  if (tried === 0) throw new UpstreamError('EVM_RPC_CONFIG', '来源链缺少可用的 RPC 节点。', 503);
+  throw last;
 }
 
 type Probe = { expiresAt: number; result: Promise<void> };
@@ -46,27 +78,45 @@ function cachedProbe(cache: Map<string, Probe>, key: string, run: () => Promise<
   return probe.result;
 }
 
+const HEALTH_TIMEOUT_MS = 5_000;
+/** Transient upstream failures never close a route: the reviewed quote and the
+ * on-chain source verification still gate every payment, so a throttled node
+ * must not hide a route. Definitive mismatches always close it. */
+async function checked(run: () => Promise<unknown>, validate: (value: unknown) => void): Promise<void> {
+  try { validate(await run()); }
+  catch (error) { if (isTransient(error)) return; throw error; }
+}
+
 /** Gate new quotes only. Tracking existing payments always continues through their reviewed RPC. */
 export async function assertEvmSourceHealthy(routeId: string): Promise<void> {
   const { route, depository } = reviewed(routeId);
-  const url = evmRpcUrl(routeId);
-  const networkKey = `${route.sourceChainId}:${depository.toLowerCase()}:${url}`;
-  await cachedProbe(networkProbes, networkKey, async () => {
-    const [chainId, finalized, code] = await Promise.all([
-      evmRpc(url, 'eth_chainId', []),
-      evmRpc(url, 'eth_getBlockByNumber', ['finalized', false]),
-      evmRpc(url, 'eth_getCode', [depository, 'latest']),
-    ]);
-    if (BigInt(quantity.parse(chainId)) !== BigInt(route.sourceChainId)) throw new UpstreamError('EVM_NETWORK_MISMATCH', '来源链 RPC 网络与审核配置不一致。', 503);
-    z.object({ number: quantity, hash, transactions: z.array(hash) }).parse(finalized);
-    bytecode.parse(code);
-  });
-  await cachedProbe(tokenProbes, `${networkKey}:${route.sourceToken.toLowerCase()}:${route.decimals}`, async () => {
-    const [code, decimals] = await Promise.all([
-      evmRpc(url, 'eth_getCode', [route.sourceToken, 'latest']),
-      evmRpc(url, 'eth_call', [{ to: route.sourceToken, data: '0x313ce567' }, 'latest']),
-    ]);
-    bytecode.parse(code);
-    if (BigInt(hash.parse(decimals)) !== BigInt(route.decimals)) throw new UpstreamError('EVM_TOKEN_MISMATCH', '链上代币精度与审核配置不一致。', 503);
-  });
+  evmRpcUrls(routeId);
+  const networkKey = `${route.sourceChainId}:${depository.toLowerCase()}`;
+  // Network and token reads are independent; running them together halves the
+  // wall-clock window in which a throttled provider can stall the config route.
+  await Promise.all([
+    cachedProbe(networkProbes, networkKey, async () => {
+      await Promise.all([
+        checked(() => evmRpcFailover(routeId, 'eth_chainId', [], HEALTH_TIMEOUT_MS, 2), value => {
+          if (BigInt(quantity.parse(value)) !== BigInt(route.sourceChainId)) throw new UpstreamError('EVM_NETWORK_MISMATCH', '来源链 RPC 网络与审核配置不一致。', 503);
+        }),
+        checked(() => evmRpcFailover(routeId, 'eth_getBlockByNumber', ['finalized', false], HEALTH_TIMEOUT_MS, 2), value => {
+          z.object({ number: quantity, hash, transactions: z.array(hash) }).parse(value);
+        }),
+        checked(() => evmRpcFailover(routeId, 'eth_getCode', [depository, 'latest'], HEALTH_TIMEOUT_MS, 2), value => {
+          bytecode.parse(value);
+        }),
+      ]);
+    }),
+    cachedProbe(tokenProbes, `${networkKey}:${route.sourceToken.toLowerCase()}:${route.decimals}`, async () => {
+      await Promise.all([
+        checked(() => evmRpcFailover(routeId, 'eth_getCode', [route.sourceToken, 'latest'], HEALTH_TIMEOUT_MS, 2), value => {
+          bytecode.parse(value);
+        }),
+        checked(() => evmRpcFailover(routeId, 'eth_call', [{ to: route.sourceToken, data: '0x313ce567' }, 'latest'], HEALTH_TIMEOUT_MS, 2), value => {
+          if (BigInt(hash.parse(value)) !== BigInt(route.decimals)) throw new UpstreamError('EVM_TOKEN_MISMATCH', '链上代币精度与审核配置不一致。', 503);
+        }),
+      ]);
+    }),
+  ]);
 }
