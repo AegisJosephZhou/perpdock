@@ -6,7 +6,21 @@ import { executeOrderPayment } from './payment.js';
 import GaslessReadiness from './GaslessReadiness.js';
 import OrderProgress from './OrderProgress.js';
 import WalletConnectDialog from './WalletConnectDialog.js';
+import perpexLogo from './assets/brand/perpex.png';
+import hyperliquidLogo from './assets/brand/hyperliquid.svg';
+import ethereumLogo from './assets/brand/ethereum.svg';
+import arbitrumLogo from './assets/brand/arbitrum.png';
+import baseLogo from './assets/brand/base.svg';
+import optimismLogo from './assets/brand/optimism.svg';
+import polygonLogo from './assets/brand/polygon.svg';
+import bnbLogo from './assets/brand/bnb.svg';
+import tronLogo from './assets/brand/tron.svg';
 import { approveExact, connectEvm, connectTron, disconnectEvm, evmProvider, getAllowance, getEvmChain, listEvmWallets, preflightPayment, sendPayment, sourceBalance, sourceNativeBalance, switchEvmChain, validateQuoteContext, walletAddressEquals } from './wallets.js';
+
+const networkLogos: Record<number, string> = {
+  1: ethereumLogo, 42161: arbitrumLogo, 8453: baseLogo, 10: optimismLogo,
+  137: polygonLogo, 56: bnbLogo,
+};
 
 const labels: Record<OrderStatus, string> = { awaiting_signature: '等待钱包签名', source_pending: '确认源链付款', bridging: '兑换与跨链处理中', verifying_credit: '核验合约账户入账', completed: '已核实到账', attention: '需要进一步核查', expired: '报价已过期' };
 const brief = (address: string) => address.length > 20 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
@@ -83,6 +97,7 @@ export default function App() {
   const orderReads = useRef(new Map<string, Promise<Order>>());
   const route = config?.routes.find((entry) => entry.id === (order?.quote.routeId || routeId));
   const source = route?.walletType === 'tron' ? tronAddress : evmAddress;
+  const networkLogo = route?.walletType === 'tron' ? tronLogo : route ? networkLogos[route.sourceChainId] : undefined;
   const walletConnectChosen = walletId === 'walletconnect';
   const walletConnectUnavailable = walletConnectChosen && !config?.walletConnect?.projectId;
   const sourceNetwork = route?.walletType === 'evm' && route.sourceChainId === 1 ? 'Ethereum 主网' : route?.sourceChain || '付款网络';
@@ -488,7 +503,7 @@ export default function App() {
   return <div className="app-shell">
     {walletConnectPrompt && <WalletConnectDialog uri={walletConnectPrompt.uri} onCancel={() => { walletConnectAbort.current?.abort(); setWalletConnectPrompt(undefined); }}/>}
     <header className="site-header">
-      <div className="brand"><span className="brand-mark" aria-hidden="true">P<span>↗</span></span><span>Perpex</span></div>
+      <div className="brand"><img className="brand-logo" src={perpexLogo} width="44" height="44" alt=""/><span>Perpex</span></div>
       <div className="header-actions"><span className={`network-status ${configError || config?.paused ? 'warning' : ''}`}><i/>{configError ? '连接异常' : config?.paused ? '暂停新入金' : config ? '主网' : '连接中'}</span><button className="history-button" disabled={!!busy} onClick={() => toggleHistory(!historyOpen)} aria-label={historyOpen ? '返回当前订单' : '订单记录'}>{historyOpen ? '返回' : '订单记录'}<span aria-hidden="true">{historyOpen ? '↩' : '↗'}</span></button></div>
     </header>
     <main className="funding-shell">
@@ -530,7 +545,7 @@ export default function App() {
         <div className="transfer-cards">
           <section className="card source-card" aria-label="付款信息">
             <div className="card-topline"><span>从</span><button className="text-button balance-button" disabled={!source || !!busy} onClick={() => setBalanceTick((n) => n + 1)} aria-label="刷新付款钱包余额">{balance !== undefined ? <>余额 <strong className="mono">{balance}</strong> {route?.symbol}</> : source ? '读取余额' : '连接后读取余额'}<span aria-hidden="true">↻</span></button></div>
-            <div className="asset-line"><div className="asset-symbol" aria-hidden="true">{route?.symbol?.startsWith('USDT') ? '₮' : '$'}</div><div className="network-asset-selectors"><div className="asset-selector"><label htmlFor="source-network">付款网络</label><select id="source-network" value={route ? `${route.walletType}:${route.sourceChainId}` : ''} disabled={!!order || !!busy || restoring || paymentAttempted || !config} onChange={(event) => chooseNetwork(event.target.value)}><option value="" disabled>{config ? '选择网络' : '加载网络…'}</option>{networks.map((item) => { const available = config!.routes.some((other) => other.sourceChainId === item.sourceChainId && other.walletType === item.walletType && other.available); return <option key={`${item.walletType}:${item.sourceChainId}`} value={`${item.walletType}:${item.sourceChainId}`} disabled={!available}>{item.sourceChain}{available ? '' : ' · 暂不可用'}</option>; })}</select></div><div className="asset-selector"><label htmlFor="route">付款资产</label><select id="route" value={order?.quote.routeId || routeId} disabled={!!order || !!busy || restoring || paymentAttempted || !config} onChange={(event) => chooseRoute(event.target.value)}><option value="" disabled>选择资产</option>{networkRoutes.map((item) => <option key={item.id} value={item.id} disabled={!item.available}>{item.symbol}{item.available ? '' : ' · 暂不可用'}</option>)}</select></div></div></div>
+            <div className="asset-line"><span className="network-mark" aria-hidden="true">{networkLogo && <img className="network-logo" src={networkLogo} width="38" height="38" alt=""/>}</span><div className="network-asset-selectors"><div className="asset-selector"><label htmlFor="source-network">付款网络</label><select id="source-network" value={route ? `${route.walletType}:${route.sourceChainId}` : ''} disabled={!!order || !!busy || restoring || paymentAttempted || !config} onChange={(event) => chooseNetwork(event.target.value)}><option value="" disabled>{config ? '选择网络' : '加载网络…'}</option>{networks.map((item) => { const available = config!.routes.some((other) => other.sourceChainId === item.sourceChainId && other.walletType === item.walletType && other.available); return <option key={`${item.walletType}:${item.sourceChainId}`} value={`${item.walletType}:${item.sourceChainId}`} disabled={!available}>{item.sourceChain}{available ? '' : ' · 暂不可用'}</option>; })}</select></div><div className="asset-selector"><label htmlFor="route">付款资产</label><select id="route" value={order?.quote.routeId || routeId} disabled={!!order || !!busy || restoring || paymentAttempted || !config} onChange={(event) => chooseRoute(event.target.value)}><option value="" disabled>选择资产</option>{networkRoutes.map((item) => <option key={item.id} value={item.id} disabled={!item.available}>{item.symbol}{item.available ? '' : ' · 暂不可用'}</option>)}</select></div></div></div>
             {route && <details className="asset-identity"><summary>代币合约与资产说明</summary><p>{route.assetNote || `${route.sourceChain} 上的 ${route.symbol}，精度 ${route.decimals} 位。`}</p><code>{route.sourceToken}</code><p>此地址用于核对代币，请勿直接转账至合约。</p></details>}
             <label className="sr-only" htmlFor="amount">支付金额</label><div className="amount-input"><input id="amount" inputMode="decimal" autoComplete="off" value={amount} placeholder="0.00" disabled={!!order || !!busy} onChange={(event) => { setAmount(event.target.value); invalidateQuote(); }}/><span>{route?.symbol || '—'}</span></div>
             <div className="amount-shortcuts" aria-label="快捷支付金额">{[25, 50, 100].map((percent) => <button key={percent} disabled={balance === undefined || !route || !config || !!order || !!busy} onClick={() => chooseAmount(percent)}>{percent === 100 ? '全部' : `${percent}%`}</button>)}</div>
@@ -552,7 +567,7 @@ export default function App() {
           <div className="transfer-arrow" aria-hidden="true">↓</div>
           <section className="card destination-card" aria-label="接收信息">
             <div className="card-topline"><span>到</span><span className="destination-network">默认 Perps 账户</span></div>
-            <div className="destination-title"><span className="hype-mark" aria-hidden="true">HL</span><div><h2>Hyperliquid</h2><p>USDC · 永续合约保证金</p></div></div>
+            <div className="destination-title"><span className="hype-mark" aria-hidden="true"><img src={hyperliquidLogo} width="38" height="38" alt=""/></span><div><h2>Hyperliquid</h2><p>USDC · 永续合约保证金</p></div></div>
             <div className="receive-label">预计到账</div><div className="receive-amount mono">{shownQuote?.expectedReceive || '—'}<span>USDC</span></div><p className="minimum-receive">{shownQuote ? `最低到账 ${shownQuote.minReceive} USDC` : '获取实时报价后显示净到账金额'}</p>
             <div className="recipient-section"><div className="label-line"><label htmlFor="recipient">你的 HL 接收地址</label><button className="text-button" disabled={!!order || !!busy || (!evmAddress && walletConnectUnavailable)} onClick={() => void operation('recipient', async () => { const address = evmAddress || await connectSelectedEvm(); setRecipient(address); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); setConnectedTick((n) => n + 1); })}>{evmAddress ? '填入已连接地址 ↗' : walletConnectChosen ? '扫码连接 EVM 钱包填入 ↗' : '连接 EVM 钱包填入 ↗'}</button></div><input className="recipient-input mono" id="recipient" value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" disabled={!!order || !!busy} onChange={(event) => { setRecipient(event.target.value.trim()); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); }}/>{recipient && <p className="full-address mono address-preview">{recipient}</p>}{recipient && !isAddress(recipient) && <p className="field-warning">请输入完整、有效的 EVM 地址（0x 开头）。</p>}<p className="field-help">{route?.walletType === 'tron' ? 'Tron 付款地址与 HL 接收地址需要分别确认。' : '可使用付款钱包的同一 0x 地址，或填写自己控制的其他 HL 接收地址；仍需核对确认。'}</p><label className="check-row"><input type="checkbox" checked={recipientConfirmed} disabled={!isAddress(recipient) || !!busy} onChange={(event) => { setRecipientConfirmed(event.target.checked); if (!order) setQuote(undefined); }}/><span>我已核对并控制上述 HL 接收地址，确认存入其默认 Perps 账户。</span></label>{differs && <label className="check-row warning-check"><input type="checkbox" checked={differentConfirmed} disabled={!!busy} onChange={(event) => setDifferentConfirmed(event.target.checked)}/><span>付款与接收地址不同，我确认这是有意指定的接收账户。</span></label>}</div>
           </section>
