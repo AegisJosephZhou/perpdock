@@ -153,7 +153,8 @@ describe('on-demand gasless readiness in the real App', () => {
   });
   it('removes the report on disconnect and requires an explicit inspection after reconnect', async () => {
     await render(); await connect(); await inspect(); await emit('disconnect'); expect(readiness()).toBeNull();
-    await emit('accountsChanged', [source]); expect(status()).toBe(''); await inspect(); expect(status()).toContain('代付接口：支持'); expectReadOnly();
+    await emit('accountsChanged', [source]); expect(readiness()).toBeNull();
+    await connect(); expect(status()).toBe(''); await inspect(); expect(status()).toContain('代付接口：支持'); expectReadOnly();
   });
   it('cancels pending work when choosing another wallet and binds the next check to that provider', async () => {
     const original = selected; const pending = deferred<unknown>(); original.setAnswer(() => pending.promise);

@@ -14,6 +14,14 @@ const isRecord = value => value !== null && typeof value === 'object' && !Array.
 const JSON_LIMIT = 128 * 1024;
 const HTML_LIMIT = 256 * 1024;
 const ASSET_LIMIT = 4 * 1024 * 1024;
+// Exact optional browser destinations reviewed with Core 2.26 and shared/route-registry.ts.
+// Keep aligned with server/app.ts; no private operator RPC URLs are accepted.
+const WALLETCONNECT_CONNECT_SOURCES = [
+  'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org',
+  'https://verify.walletconnect.com', 'https://verify.walletconnect.org',
+  'https://ethereum.publicnode.com', 'https://arbitrum-one.publicnode.com', 'https://base.drpc.org',
+  'https://optimism.publicnode.com', 'https://polygon-bor-rpc.publicnode.com', 'https://bsc-rpc.publicnode.com',
+];
 
 function amountUnits(value) {
   requireCheck(typeof value === 'string' && /^(?:0|[1-9]\d{0,4})(?:\.\d{1,6})?$/.test(value), 'INVALID_AMOUNT');
@@ -91,9 +99,14 @@ function securityHeaders(headers) {
   exact('script-src', ["'self'"]);
   exact('object-src', ["'none'"]);
   exact('frame-ancestors', ["'none'"]);
-  exact('connect-src', ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com']);
+  const walletConnectConfigured = directives.get('connect-src')?.includes('wss://relay.walletconnect.org') ?? false;
+  exact('connect-src', ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com',
+    ...(walletConnectConfigured ? WALLETCONNECT_CONNECT_SOURCES : [])]);
+  if (walletConnectConfigured) exact('frame-src', ['https://verify.walletconnect.org']);
+  else if (directives.has('frame-src')) exact('frame-src', ["'self'"]);
   if (directives.has('script-src-elem')) exact('script-src-elem', ["'self'"]);
   if (directives.has('script-src-attr')) exact('script-src-attr', ["'none'"]);
+  return { walletConnectConfigured };
 }
 
 function builtAssets(html) {
@@ -145,6 +158,9 @@ function hasHtmlPrefix(bytes) {
 
 function configSnapshot(body) {
   requireCheck(isRecord(body) && body.appName === 'Perpex' && body.network === 'mainnet' && typeof body.paused === 'boolean' && isRecord(body.limits), 'INVALID_CONFIG');
+  const walletConnectConfigured = body.walletConnect !== undefined;
+  requireCheck(!walletConnectConfigured || (isRecord(body.walletConnect) &&
+    typeof body.walletConnect.projectId === 'string' && /^[a-f\d]{32}$/i.test(body.walletConnect.projectId)), 'INVALID_WALLETCONNECT_CONFIG');
   amountUnits(body.limits.minAmount); amountUnits(body.limits.maxAmount);
   requireCheck(Array.isArray(body.routes) && body.routes.length > 0 && body.routes.length <= 32, 'INVALID_ROUTES');
   const seen = new Set();
@@ -157,7 +173,7 @@ function configSnapshot(body) {
     seen.add(route.id);
     return { id: route.id, sourceChainId: route.sourceChainId, symbol: route.symbol, decimals: route.decimals, walletType: route.walletType, available: route.available };
   });
-  return { config: { appName: body.appName, network: body.network, paused: body.paused,
+  return { config: { appName: body.appName, network: body.network, paused: body.paused, walletConnectConfigured,
     limits: { minAmount: body.limits.minAmount, maxAmount: body.limits.maxAmount } }, routes };
 }
 
@@ -205,6 +221,7 @@ export async function verifyDeployment(options, { fetchImpl = globalThis.fetch, 
 
   let htmlResponse;
   let assets;
+  let securityProfile;
   await check('https_html', async () => {
     htmlResponse = await request(`${origin}/`, { limit: HTML_LIMIT });
     requireCheck(htmlResponse.status === 200, 'UNEXPECTED_HTTP_STATUS');
@@ -214,7 +231,7 @@ export async function verifyDeployment(options, { fetchImpl = globalThis.fetch, 
   });
   await check('security_headers', async () => {
     requireCheck(htmlResponse?.status === 200, 'HTML_UNAVAILABLE');
-    securityHeaders(htmlResponse.headers);
+    securityProfile = securityHeaders(htmlResponse.headers);
   });
   await check('built_assets', async () => {
     requireCheck(assets, 'ASSETS_UNAVAILABLE');
@@ -250,6 +267,7 @@ export async function verifyDeployment(options, { fetchImpl = globalThis.fetch, 
     report.configSnapshot = snapshot.config; report.routeSnapshot = snapshot.routes;
     report.routeAvailability = { available: snapshot.routes.filter(route => route.available).length, total: snapshot.routes.length,
       meaning: 'Observed route gate only; does not prove quotes, payment verification or funds readiness.' };
+    requireCheck(securityProfile?.walletConnectConfigured === snapshot.config.walletConnectConfigured, 'WALLETCONNECT_CSP_CONFIG_MISMATCH');
     requireCheck(snapshot.config.paused, 'NEW_ORDERS_NOT_PAUSED');
     requireCheck(amountUnits(snapshot.config.limits.minAmount) === amountUnits(expectedMin) && amountUnits(snapshot.config.limits.maxAmount) === amountUnits(expectedMax), 'UNEXPECTED_AMOUNT_LIMITS');
   });

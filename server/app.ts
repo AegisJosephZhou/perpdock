@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { OrderService } from './order-service.js';
 import { AppError } from './security.js';
 import { UpstreamError } from './chain/http.js';
+import type { AppConfig } from '../shared/types.js';
+import { REVIEWED_EVM_SOURCES } from '../shared/route-registry.js';
 
 const quoteInput = z.object({
   routeId: z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/),
@@ -22,9 +24,18 @@ const idSchema = z.string().regex(/^[\w-]{32}$/);
 export interface HttpOptions {
   allowedOrigins: string[]; staticDir?: string; version?: string;
   logging?: boolean; rateLimitMax?: number; trustProxyHops?: number;
+  walletConnectProjectId?: string;
+}
+
+/** Public dashboard identifier only. Never forward the process environment to the browser. */
+export function walletConnectConfig(projectId: string | undefined): AppConfig['walletConnect'] {
+  if (projectId === undefined || projectId === '') return undefined;
+  if (!/^[a-f\d]{32}$/i.test(projectId)) throw new Error('WALLETCONNECT_PROJECT_ID must be a 32-character hexadecimal project ID, or empty to disable WalletConnect.');
+  return { projectId };
 }
 
 export function createApp(service: OrderService, options: HttpOptions): express.Express {
+  const walletConnect = walletConnectConfig(options.walletConnectProjectId);
   const app = express();
   app.disable('x-powered-by');
   // Do not trust arbitrary X-Forwarded-For. Single-instance production ingress can be configured separately.
@@ -32,7 +43,14 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   app.set('trust proxy', options.trustProxyHops ?? false);
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"],
-    connectSrc: ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com'],
+    connectSrc: ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com',
+      ...(walletConnect ? [
+        'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org',
+        'https://verify.walletconnect.com', 'https://verify.walletconnect.org',
+        ...new Set(REVIEWED_EVM_SOURCES.map(source => new URL(source.publicRpcUrl).origin)),
+      ] : [])],
+    // WalletConnect Core 2.26 uses a hidden Verify attestation frame; no remote script/UI is loaded.
+    ...(walletConnect ? { frameSrc: ['https://verify.walletconnect.org'] } : {}),
     imgSrc: ["'self'", 'data:'], objectSrc: ["'none'"], frameAncestors: ["'none'"],
   } } }));
   app.use((req, res, next) => {
@@ -86,7 +104,9 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   };
 
   app.get('/api/health', (_req, res) => { res.json({ status: 'ok', version: options.version ?? '0.1.0' }); });
-  app.get('/api/config', asyncRoute(async (_req, res) => { res.json(await service.config()); }));
+  app.get('/api/config', asyncRoute(async (_req, res) => {
+    res.json({ ...await service.config(), ...(walletConnect ? { walletConnect } : {}) });
+  }));
   app.post('/api/quotes', asyncRoute(async (req, res) => { res.status(201).json(await service.quote(parse(quoteInput, req.body))); }));
   app.post('/api/orders', (req, res, next) => {
     try {

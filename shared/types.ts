@@ -53,4 +53,8 @@ export interface ProviderAdapter {
   trackOrder(order: TrackedOrder): Promise<TrackingUpdate>;
   getAccount(address: string): Promise<Account>;
 }
-export interface AppConfig { appName: string; network: 'mainnet'; routes: Route[]; limits: { minAmount: string; maxAmount: string }; paused: boolean }
+export interface AppConfig {
+  appName: string; network: 'mainnet'; routes: Route[]; limits: { minAmount: string; maxAmount: string }; paused: boolean;
+  /** Public Reown dashboard identifier; omitted when WalletConnect is not configured. */
+  walletConnect?: { projectId: string };
+}

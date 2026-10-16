@@ -77,6 +77,7 @@ function button(pattern: RegExp): HTMLButtonElement {
 function field(id: string): HTMLInputElement { return host.querySelector<HTMLInputElement>(`#${id}`)!; }
 function select() { return host.querySelector<HTMLSelectElement>('#route')!; }
 function confirmations() { return [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]; }
+function actionStatus() { return host.querySelector<HTMLElement>('.action-area [role="status"][aria-label="入金操作提示"]'); }
 async function flush() { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); }
 async function render() { await act(async () => { root.render(<App />); }); mounted = true; await flush(); }
 async function click(node: HTMLElement) { await act(async () => { node.click(); }); await flush(); }
@@ -129,6 +130,20 @@ afterEach(async () => {
 });
 
 describe('Ethereum and Tron real-route UI guards', () => {
+  it('explains the missing wallet and recipient consent beside the disabled quote action, then clears the hint when ready', async () => {
+    await render(); await input('amount', '10'); await input('recipient', evmSource);
+    expect(button(/获取实时入金报价/).disabled).toBe(true);
+    expect(actionStatus()?.textContent).toMatch(/连接.*钱包/);
+    expect(button(/获取实时入金报价/).getAttribute('aria-describedby')).toBe(actionStatus()?.id);
+    await click(button(/获取实时入金报价/)); expect(api.quote).not.toHaveBeenCalled();
+    await click(button(/^连接钱包$/));
+    expect(button(/获取实时入金报价/).disabled).toBe(true); expect(confirmations()[0]!.checked).toBe(false);
+    expect(actionStatus()?.textContent).toMatch(/(?:核对|确认).*接收地址/);
+    await confirmAll();
+    expect(button(/获取实时入金报价/).disabled).toBe(false); expect(actionStatus()).toBeNull();
+    expect(api.quote).not.toHaveBeenCalled(); expect(api.createOrder).not.toHaveBeenCalled();
+    expect(wallets.approveExact).not.toHaveBeenCalled(); expect(wallets.sendPayment).not.toHaveBeenCalled();
+  });
   it('defaults to the first available Ethereum route and fills the connected address without consenting for the user', async () => {
     await render(); expect(select().value).toBe(ethereum.id); expect(host.querySelector<HTMLSelectElement>('#source-network')!.options).toHaveLength(3);
     expect(host.textContent).toContain('MetaMask / Rabby'); expect(host.textContent).toContain('ETH 支付 Ethereum 主网');
@@ -164,6 +179,34 @@ describe('Ethereum and Tron real-route UI guards', () => {
     chain = 137; await emit('chainChanged', '0x89');
     expect(buttons(/确认报价，创建订单/)).toHaveLength(0); expect(confirmations().every(item => !item.checked)).toBe(true);
     expect(host.textContent).not.toContain('40.123456'); expect(button(/获取实时入金报价/).disabled).toBe(true);
+  });
+  it('discards the old quote on wallet disconnect and requires reconnecting and fresh consent before another quote', async () => {
+    await render(); await fillEthereum(); await click(button(/获取实时入金报价/));
+    expect(button(/确认报价，创建订单/).disabled).toBe(false);
+    await emit('disconnect', { code: 4900 });
+    expect(buttons(/确认报价，创建订单/)).toHaveLength(0); expect(host.textContent).not.toContain('9.71234567');
+    expect(field('amount').value).toBe('10'); expect(field('recipient').value).toBe(evmSource);
+    expect(confirmations()[0]!.checked).toBe(false); expect(button(/获取实时入金报价/).disabled).toBe(true);
+    expect(actionStatus()?.textContent).toMatch(/连接.*钱包/);
+    await click(button(/获取实时入金报价/)); expect(api.quote).toHaveBeenCalledTimes(1);
+    await click(button(/^连接钱包$/));
+    expect(confirmations()[0]!.checked).toBe(false); expect(button(/获取实时入金报价/).disabled).toBe(true);
+    expect(actionStatus()?.textContent).toMatch(/(?:核对|确认).*接收地址/);
+    await confirmAll();
+    expect(button(/获取实时入金报价/).disabled).toBe(false); expect(actionStatus()).toBeNull();
+    expect(buttons(/确认报价，创建订单/)).toHaveLength(0); expect(api.quote).toHaveBeenCalledTimes(1);
+    expect(api.createOrder).not.toHaveBeenCalled(); expect(wallets.sendPayment).not.toHaveBeenCalled();
+  });
+  it('allows reading a quote with zero ETH but explains why creating the order remains disabled', async () => {
+    vi.mocked(wallets.sourceNativeBalance).mockResolvedValue('0');
+    await render(); await fillEthereum();
+    expect(button(/获取实时入金报价/).disabled).toBe(false); expect(actionStatus()).toBeNull();
+    await click(button(/获取实时入金报价/));
+    expect(api.quote).toHaveBeenCalledTimes(1); expect(button(/确认报价，创建订单/).disabled).toBe(true);
+    expect(actionStatus()?.textContent).toContain('ETH'); expect(actionStatus()?.textContent).toMatch(/手续费|链费/);
+    await click(button(/确认报价，创建订单/));
+    expect(api.createOrder).not.toHaveBeenCalled(); expect(wallets.approveExact).not.toHaveBeenCalled();
+    expect(wallets.sendPayment).not.toHaveBeenCalled();
   });
   it('rejects a stale in-flight quote after the network changes', async () => {
     let resolve!: (quote: Quote) => void;
@@ -206,11 +249,33 @@ describe('Ethereum and Tron real-route UI guards', () => {
     expect(buttons(/钱包签名并付款|授权本笔额度/).every(item => item.disabled)).toBe(true);
     expect(wallets.approveExact).not.toHaveBeenCalled(); expect(wallets.sendPayment).not.toHaveBeenCalled();
   });
-  it('keeps unknown Ethereum payments in recovery and carries real quote warnings into progress', async () => {
-    saveOrder(fixtureQuote(), {}, { state: 'unknown' }); await render();
+  it.each(['awaiting_signature', 'expired'] as const)('keeps unknown Ethereum payments in recovery when the order is %s', async status => {
+    const quote = fixtureQuote(); if (status === 'expired') quote.expiresAt = '2000-01-01T00:00:00.000Z';
+    saveOrder(quote, { status }, { state: 'unknown' }); await render();
     expect(host.querySelector('main h1')?.textContent).toBe('入金进度'); expect(host.querySelector('#route')).toBeNull();
-    expect(buttons(/获取实时入金报价|开始新入金|重新填写入金|钱包签名并付款/)).toHaveLength(0);
-    expect(host.textContent).toContain(finalityWarning); expect(wallets.sendPayment).not.toHaveBeenCalled();
+    expect(buttons(/获取实时入金报价|重新获取报价|返回并重新报价|开始新入金|重新填写入金|钱包签名并付款/)).toHaveLength(0);
+    expect(host.textContent).toContain(finalityWarning); expect(api.quote).not.toHaveBeenCalled();
+    expect(api.createOrder).not.toHaveBeenCalled(); expect(wallets.approveExact).not.toHaveBeenCalled();
+    expect(wallets.sendPayment).not.toHaveBeenCalled();
+  });
+  it('returns an unpaid expired order to preparation without quoting or signing, preserving fields but resetting consent', async () => {
+    const quote = fixtureQuote(); quote.expiresAt = '2000-01-01T00:00:00.000Z';
+    saveOrder(quote, { status: 'expired' }); await render(); await click(button(/^连接钱包$/)); await confirmAll();
+    expect(button(/返回并重新报价/).disabled).toBe(false);
+    expect(host.querySelector('.action-area')?.textContent).toMatch(/(?:核对|确认).*接收地址/);
+    await click(button(/返回并重新报价/));
+    expect(field('amount').value).toBe('10'); expect(field('recipient').value).toBe(evmSource);
+    expect(confirmations()[0]!.checked).toBe(false); expect(button(/获取实时入金报价/).disabled).toBe(true);
+    expect(actionStatus()?.textContent).toMatch(/(?:核对|确认).*接收地址/);
+    expect(api.quote).not.toHaveBeenCalled(); expect(api.createOrder).not.toHaveBeenCalled();
+    expect(wallets.connectEvm).toHaveBeenCalledTimes(1); expect(wallets.approveExact).not.toHaveBeenCalled();
+    expect(wallets.sendPayment).not.toHaveBeenCalled();
+    await confirmAll();
+    expect(button(/获取实时入金报价/).disabled).toBe(false); expect(actionStatus()).toBeNull();
+    expect(api.quote).not.toHaveBeenCalled();
+    await click(button(/获取实时入金报价/)); expect(api.quote).toHaveBeenCalledTimes(1);
+    expect(button(/确认报价，创建订单/).disabled).toBe(false); expect(api.createOrder).not.toHaveBeenCalled();
+    expect(wallets.sendPayment).not.toHaveBeenCalled();
   });
   it('shows Ethereum quote fees and finality warnings without inventing a total arrival estimate', async () => {
     await render(); await fillEthereum(); await click(button(/获取实时入金报价/));

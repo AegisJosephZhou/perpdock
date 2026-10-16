@@ -270,3 +270,15 @@ dt small { display: block; font-size: 10px; margin-top: 3px; line-height: 1.65; 
 .progress-query-warning { padding:12px 14px; margin:14px 0 0; border-radius:10px; background:#fff7e5; color:#805d15; font-size:12px; line-height:1.8; }
 
 .progress-step p { color:var(--muted); }
+
+.disconnect-wallet { margin-top: 12px; font-size: 11px; }
+.walletconnect-dialog { width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; padding: 24px; margin: auto; border: 1px solid var(--border); border-radius: 20px; background: #fff; color: var(--ink); box-shadow: 0 20px 80px #172c2933; }
+.walletconnect-dialog::backdrop { background: #15272399; }
+.walletconnect-dialog .panel-heading { margin-bottom: 14px; gap: 12px; }
+.walletconnect-dialog .panel-heading h2 { font-size: 17px; }
+.walletconnect-dialog .panel-heading button { flex-shrink: 0; font-size: 12px; }
+.walletconnect-dialog > p { font-size: 13px; line-height: 1.8; }
+.walletconnect-qr { min-height: 260px; display: flex; align-items: center; justify-content: center; margin: 12px 0; background: #fff; }
+.walletconnect-qr img { display: block; width: 100%; max-width: 320px; height: auto; }
+.walletconnect-qr > p { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.walletconnect-actions { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-top: 18px; }

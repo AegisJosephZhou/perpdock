@@ -25,6 +25,10 @@ export function validatePublicEnvironment(env) {
   if (!['true', 'false'].includes(env.PAUSE_NEW_ORDERS)) {
     throw new Error('PAUSE_NEW_ORDERS must explicitly be true or false.');
   }
+  if (env.WALLETCONNECT_PROJECT_ID !== undefined && env.WALLETCONNECT_PROJECT_ID !== '' &&
+      !/^[a-f\d]{32}$/i.test(env.WALLETCONNECT_PROJECT_ID)) {
+    throw new Error('WALLETCONNECT_PROJECT_ID must be a 32-character hexadecimal project ID, or empty to disable WalletConnect.');
+  }
   const parseAmount = (value) => {
     if (!/^\d{1,5}(?:\.\d{1,6})?$/.test(value || '')) {
       throw new Error('MIN_AMOUNT and MAX_AMOUNT must be positive decimal USDT amounts with at most 6 decimals.');

@@ -1,5 +1,11 @@
 # Perpex 当前进度
 
+## 2026-10-15 WalletConnect 更新
+
+本轮新增六个 EVM 主网的 WalletConnect 扫码连接，保留注入钱包与 TronLink；补充报价按钮禁用原因，并修复未记录付款的过期订单返回重新报价入口。配置与使用范围见 [WalletConnect 说明](WALLETCONNECT.md)。
+
+**519/519 应用测试、43/43 部署工具检查、TypeScript 与构建已通过。用户反馈 WalletConnect 连接测试成功；精确授权、小额付款及本单 Hyperliquid 默认 Perps 入账仍未完成资金验收。** 推送状态以远端提交为准。以下原有正文保留此前时点的记录；其中钱包连接范围、测试数量及相关待办以本节和 WalletConnect 说明为准。
+
 状态快照：2026-10-15，America/Los_Angeles。当前代码为rc5基础加10月14–15日研发增量，package version仍为0.1.0。本次提交包含下表新增能力和更新文档；推送结果以远端提交为准。
 
 **真实前后端和九路线已实现；用户钱包签名到本单Hyperliquid入账尚未验收，目标公网部署未确认，真正零原生币付款及Perpex收费尚未实现。** 已有品牌站或其他交易产品不能证明本仓库的新入金模块上线。

@@ -24,6 +24,7 @@ services:
       ORDER_TOKEN_SECRET: ${ORDER_TOKEN_SECRET:?Set a stable high-entropy ORDER_TOKEN_SECRET}
       RELAY_API_KEY: ${RELAY_API_KEY:-}
       TRONGRID_API_KEY: ${TRONGRID_API_KEY:-}
+      WALLETCONNECT_PROJECT_ID: ${WALLETCONNECT_PROJECT_ID:-}
       ETHEREUM_RPC_URL: ${ETHEREUM_RPC_URL:-https://ethereum.publicnode.com}
       ARBITRUM_RPC_URL: ${ARBITRUM_RPC_URL:-https://arbitrum-one.publicnode.com}
       BASE_RPC_URL: ${BASE_RPC_URL:-https://base.drpc.org}

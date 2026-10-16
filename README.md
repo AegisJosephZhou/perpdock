@@ -1,5 +1,11 @@
 # Perpex · HL Funding
 
+## 2026-10-15 WalletConnect 更新
+
+本轮新增六个 EVM 主网的 WalletConnect 扫码连接，保留注入钱包与 TronLink；补充报价按钮禁用原因，并修复未记录付款的过期订单返回重新报价入口。配置与使用范围见 [WalletConnect 说明](docs/WALLETCONNECT.md)。
+
+**519/519 应用测试、43/43 部署工具检查、TypeScript 与构建已通过。用户反馈 WalletConnect 连接测试成功；精确授权、小额付款及本单 Hyperliquid 默认 Perps 入账仍未完成资金验收。** 推送状态以远端提交为准。以下原有正文保留此前时点的记录；其中钱包连接范围、测试数量及相关待办以本节和 WalletConnect 说明为准。
+
 **新会话 / 项目交接（2026-10-15）：先读 [交接入口](docs/SESSION-HANDOFF.md)。** 完整需求见 [需求总表](docs/PROJECT-REQUIREMENTS.md)，当前实际进度与下一步见 [状态表](docs/PROJECT-STATUS.md)，X 推广与线索见 [市场记录](docs/market/MARKET-STATUS.md)，钱包调研见 [研究索引](docs/research/RESEARCH-INDEX.md)。历史软件测试、真人资金验收、部署与商业验证分别记录；免 Gas 和平台收费尚未实现。
 
 七个网络、九条审核稳定币路线 → 用户指定 Hyperliquid 默认 Perps USDC 账户的非托管入金应用。默认 Ethereum USDT，另含原生 USDC、Arbitrum USDT0、BNB Chain 映射 USDT 与 Tron USDT；详见 [场景与资产清单](docs/SCENARIO-COVERAGE.md)。

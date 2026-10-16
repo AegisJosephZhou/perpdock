@@ -15,6 +15,9 @@ const security = {
   'x-content-type-options': 'nosniff', 'x-frame-options': 'SAMEORIGIN',
   'content-security-policy': "default-src 'self'; script-src 'self'; connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com; object-src 'none'; frame-ancestors 'none'; script-src-attr 'none'",
 };
+const wcProjectId = '0123456789abcdef'.repeat(2);
+const wcConnect = 'wss://relay.walletconnect.com wss://relay.walletconnect.org https://verify.walletconnect.com https://verify.walletconnect.org https://ethereum.publicnode.com https://arbitrum-one.publicnode.com https://base.drpc.org https://optimism.publicnode.com https://polygon-bor-rpc.publicnode.com https://bsc-rpc.publicnode.com';
+const wcSecurity = { ...security, 'content-security-policy': security['content-security-policy'].replace('https://tron-rpc.publicnode.com;', `https://tron-rpc.publicnode.com ${wcConnect};`) + '; frame-src https://verify.walletconnect.org' };
 const config = () => ({ appName: 'Perpex', network: 'mainnet', paused: true, limits: { minAmount: '10', maxAmount: '100' },
   routes: [{ id: 'ethereum-usdt-hypercore', sourceChainId: 1, symbol: 'USDT', decimals: 6, walletType: 'evm', available: true, reason: secret,
     sourceToken: secret, privateMetadata: secret }], privateMetadata: secret });
@@ -174,6 +177,44 @@ test('security headers accept reordered reviewed CSP but reject overrides and mi
     { 'content-security-policy': safe.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'") },
     { 'content-security-policy': safe.replace('https://api.trongrid.io', 'https://unreviewed.invalid') }]) {
     failure((await inspect(url => url === `${origin}/` ? new Response(html, { headers: { ...security, ...mutation } }) : undefined)).report, 'security_headers');
+  }
+});
+
+test('accepts the exact optional WalletConnect CSP only when public configuration agrees', async () => {
+  const { report, calls } = await inspect(url => {
+    if (url === `${origin}/`) return new Response(html, { headers: wcSecurity });
+    if (url === `${origin}/api/config`) return json({ ...config(), walletConnect: { projectId: wcProjectId, ignored: secret } });
+  });
+  assert.equal(report.status, 'passed');
+  assert.equal(report.configSnapshot.walletConnectConfigured, true);
+  assert.equal(JSON.stringify(report).includes(wcProjectId), false);
+  assert.equal(JSON.stringify(report).includes(secret), false);
+  assert.ok(calls.every(call => !call.url.includes('walletconnect') && !call.url.includes('publicnode')));
+  for (const configured of [true, false]) {
+    const { report: mismatch } = await inspect(url => {
+      if (url === `${origin}/` && !configured) return new Response(html, { headers: wcSecurity });
+      if (url === `${origin}/api/config` && configured) return json({ ...config(), walletConnect: { projectId: wcProjectId } });
+    });
+    failure(mismatch, 'paused_config', 'WALLETCONNECT_CSP_CONFIG_MISMATCH');
+  }
+});
+
+test('rejects partial or expanded WalletConnect CSP and invalid advertised IDs', async () => {
+  for (const csp of [
+    wcSecurity['content-security-policy'].replace('wss://relay.walletconnect.com', 'wss://*.walletconnect.com'),
+    wcSecurity['content-security-policy'].replace('https://base.drpc.org', 'https://unreviewed.invalid'),
+    wcSecurity['content-security-policy'].replace('wss://relay.walletconnect.org ', ''),
+    wcSecurity['content-security-policy'].replace('; frame-src https://verify.walletconnect.org', ''),
+    wcSecurity['content-security-policy'].replace('frame-src https://verify.walletconnect.org', 'frame-src https:'),
+    security['content-security-policy'] + '; frame-src https://verify.walletconnect.org',
+  ]) {
+    const { report } = await inspect(url => url === `${origin}/`
+      ? new Response(html, { headers: { ...security, 'content-security-policy': csp } }) : undefined);
+    failure(report, 'security_headers', 'UNREVIEWED_CSP');
+  }
+  for (const walletConnect of [null, {}, { projectId: secret }, { projectId: '' }, { projectId: 'a'.repeat(31) }]) {
+    const { report } = await inspect(url => url === `${origin}/api/config` ? json({ ...config(), walletConnect }) : undefined);
+    failure(report, 'paused_config', 'INVALID_WALLETCONNECT_CONFIG');
   }
 });
 

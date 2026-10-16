@@ -1,6 +1,7 @@
 import { createPublicClient, custom, decodeFunctionData, encodeFunctionData, erc20Abi, formatUnits, isAddress, parseAbi, parseUnits, type Address, type EIP1193Provider, type Hex } from 'viem';
 import type { Quote, Route } from '../shared/types.js';
 import { REVIEWED_EVM_SOURCES, reviewedEvmSource } from '../shared/route-registry.js';
+import { connectWalletConnect, disconnectWalletConnect, type WalletConnectOptions } from './walletconnect.js';
 
 export interface BrowserProvider extends Pick<EIP1193Provider, 'request'> {
   isMetaMask?: boolean; isRabby?: boolean; providers?: BrowserProvider[];
@@ -33,12 +34,12 @@ interface TronWeb {
 declare global { interface Window { ethereum?: BrowserProvider; tronLink?: { request: (input: { method: string }) => Promise<{ code?: number; message?: string }> }; tronWeb?: TronWeb } }
 
 export const depositAbi = parseAbi(['function depositErc20(address payer, address token, uint256 amount, bytes32 id)']);
-interface EvmSession { selected?: BrowserProvider; announced: Map<BrowserProvider, { rdns: string; name: string }>; ids: Map<BrowserProvider, string>; requested: boolean }
+interface EvmSession { selected?: BrowserProvider; selectedKind?: 'injected' | 'walletconnect'; selectedName?: string; disconnected?: boolean; connectionVersion: number; announced: Map<BrowserProvider, { rdns: string; name: string }>; ids: Map<BrowserProvider, string>; requested: boolean }
 const evmSessions = new WeakMap<Window, EvmSession>();
 function evmSession(): EvmSession {
   let session = evmSessions.get(window);
   if (!session) {
-    session = { announced: new Map(), ids: new Map(), requested: false }; evmSessions.set(window, session);
+    session = { announced: new Map(), ids: new Map(), requested: false, connectionVersion: 0 }; evmSessions.set(window, session);
     const current = session;
     window.addEventListener?.('eip6963:announceProvider', (event) => {
       const detail = (event as CustomEvent<{ info?: { rdns?: string; name?: string }; provider?: BrowserProvider }>).detail;
@@ -56,7 +57,7 @@ function discoveredWallets(): { id: string; name: string; provider: BrowserProvi
     window.dispatchEvent?.(new Event('eip6963:requestProvider'));
   }
   const root = window.ethereum;
-  const candidates = [...new Set([...session.announced.keys(), ...(Array.isArray(root?.providers) ? root.providers : []), ...(root ? [root] : []), ...(session.selected ? [session.selected] : [])])];
+  const candidates = [...new Set([...session.announced.keys(), ...(Array.isArray(root?.providers) ? root.providers : []), ...(root ? [root] : []), ...(session.selected && session.selectedKind !== 'walletconnect' ? [session.selected] : [])])];
   return candidates.filter(provider => provider && typeof provider.request === 'function').map(provider => {
     const info = session.announced.get(provider);
     const metaMask = info?.rdns === 'io.metamask' || (!info && provider.isMetaMask && !provider.isRabby);
@@ -68,19 +69,49 @@ function discoveredWallets(): { id: string; name: string; provider: BrowserProvi
 export function listEvmWallets(): { id: string; name: string }[] { return discoveredWallets().map(({ id, name }) => ({ id, name })); }
 export function evmProvider(): BrowserProvider {
   // Once connected, all reads, events and transactions use that exact instance.
-  const selected = evmSession().selected;
+  const session = evmSession();
+  if (session.disconnected) throw new Error('付款钱包已断开，请明确选择并重新连接钱包。');
+  const selected = session.selected;
   if (selected) return selected;
   const provider = discoveredWallets()[0]?.provider;
   if (!provider) throw new Error('未检测到浏览器 EVM 钱包。请安装并解锁 MetaMask 或 Rabby 后重试。');
   return provider;
 }
-export async function connectEvm(walletId?: string): Promise<string> {
-  const provider = walletId === undefined ? evmProvider() : discoveredWallets().find(wallet => wallet.id === walletId)?.provider;
-  if (!provider) throw new Error('所选钱包当前不可用，请重新选择并连接钱包。');
-  const accounts = await provider.request({ method: 'eth_requestAccounts' });
-  if (!Array.isArray(accounts) || !accounts[0] || !isAddress(accounts[0])) throw new Error('钱包没有提供有效账户，请解锁钱包后重试。');
-  evmSession().selected = provider;
-  return accounts[0];
+export async function connectEvm(walletId?: string, wcOptions?: WalletConnectOptions): Promise<string> {
+  const session = evmSession();
+  const version = ++session.connectionVersion;
+  const usingWalletConnect = walletId === 'walletconnect';
+  let provider: BrowserProvider;
+  let name: string;
+  if (usingWalletConnect) {
+    if (!wcOptions) throw new Error('本站尚未配置 WalletConnect，请联系部署团队。');
+    provider = await connectWalletConnect(wcOptions); name = 'WalletConnect';
+  } else {
+    // An explicit connect without an id means the preferred injected wallet.
+    // Execution reads never use this path and remain pinned to their provider.
+    const wallet = walletId === undefined ? discoveredWallets()[0] : discoveredWallets().find(wallet => wallet.id === walletId);
+    if (!wallet) throw new Error('所选钱包当前不可用，请安装并解锁 MetaMask 或 Rabby，或选择 WalletConnect。');
+    void disconnectWalletConnect();
+    provider = wallet.provider; name = wallet.name;
+  }
+  try {
+    const accounts = await provider.request({ method: usingWalletConnect ? 'eth_accounts' : 'eth_requestAccounts' });
+    if (version !== session.connectionVersion || wcOptions?.signal?.aborted) throw new Error('钱包连接请求已取消或被新的连接替代，请重试。');
+    if (!Array.isArray(accounts) || typeof accounts[0] !== 'string' || !isAddress(accounts[0])) throw new Error('钱包没有提供有效账户，请解锁钱包后重试。');
+    if (usingWalletConnect && await providerChain(provider) !== wcOptions!.chainId) throw new Error('WalletConnect 钱包网络已变化，请重新连接所选网络。');
+    if (version !== session.connectionVersion || wcOptions?.signal?.aborted) throw new Error('钱包连接请求已取消或被新的连接替代，请重试。');
+    session.selected = provider; session.selectedKind = usingWalletConnect ? 'walletconnect' : 'injected'; session.selectedName = name; session.disconnected = false;
+    return accounts[0];
+  } catch (error) {
+    if (usingWalletConnect && version === session.connectionVersion) await disconnectWalletConnect();
+    throw error;
+  }
+}
+export function selectedEvmWalletName(): string | undefined { return evmSession().selectedName; }
+export function isWalletConnectSelected(): boolean { return evmSession().selectedKind === 'walletconnect'; }
+export async function disconnectEvm(): Promise<void> {
+  const session = evmSession(); session.connectionVersion++; session.disconnected = true;
+  await disconnectWalletConnect();
 }
 function rpcQuantity(value: unknown, label: string): bigint {
   if (typeof value !== 'string' || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(value)) throw new Error(`钱包未返回有效的${label}，请重试读取，不要重复付款。`);

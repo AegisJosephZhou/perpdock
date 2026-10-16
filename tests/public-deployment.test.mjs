@@ -12,6 +12,18 @@ test('validates paused and enabled single-proxy configurations', () => {
   assert.deepEqual(validatePublicEnvironment(base), { paused: true });
   assert.deepEqual(validatePublicEnvironment({ ...base, PAUSE_NEW_ORDERS: 'false' }), { paused: false });
 });
+test('accepts an optional public WalletConnect project ID and rejects malformed values without echoing them', () => {
+  for (const projectId of [undefined, '', '0123456789abcdef'.repeat(2), 'ABCDEF0123456789'.repeat(2)]) {
+    assert.deepEqual(validatePublicEnvironment({ ...base, WALLETCONNECT_PROJECT_ID: projectId }), { paused: true });
+  }
+  for (const projectId of ['not-a-project-id', 'a'.repeat(31), 'a'.repeat(33), 'g'.repeat(32), ' a'.repeat(16), 'a'.repeat(32) + '\n']) {
+    assert.throws(() => validatePublicEnvironment({ ...base, WALLETCONNECT_PROJECT_ID: projectId }), error => {
+      assert.match(error.message, /WALLETCONNECT_PROJECT_ID/);
+      assert.equal(error.message.includes(projectId), false);
+      return true;
+    });
+  }
+});
 for (const domain of ['', 'localhost', '127.0.0.1', 'https://funding.perpdock.com',
   'funding.perpdock.com:443', 'funding.perpdock.com/path', '*.perpdock.com',
   'funding.perpdock.com\n:80', 'funding.perpdock.com other.com', 'funding.example.com',

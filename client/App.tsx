@@ -5,7 +5,8 @@ import { api, errorMessage, loadSavedOrders, persistSavedOrder, readLocalPayment
 import { executeOrderPayment } from './payment.js';
 import GaslessReadiness from './GaslessReadiness.js';
 import OrderProgress from './OrderProgress.js';
-import { approveExact, connectEvm, connectTron, evmProvider, getAllowance, getEvmChain, listEvmWallets, preflightPayment, sendPayment, sourceBalance, sourceNativeBalance, switchEvmChain, validateQuoteContext, walletAddressEquals } from './wallets.js';
+import WalletConnectDialog from './WalletConnectDialog.js';
+import { approveExact, connectEvm, connectTron, disconnectEvm, evmProvider, getAllowance, getEvmChain, listEvmWallets, preflightPayment, sendPayment, sourceBalance, sourceNativeBalance, switchEvmChain, validateQuoteContext, walletAddressEquals } from './wallets.js';
 
 const labels: Record<OrderStatus, string> = { awaiting_signature: '等待钱包签名', source_pending: '确认源链付款', bridging: '兑换与跨链处理中', verifying_credit: '核验合约账户入账', completed: '已核实到账', attention: '需要进一步核查', expired: '报价已过期' };
 const brief = (address: string) => address.length > 20 ? `${address.slice(0, 8)}…${address.slice(-6)}` : address;
@@ -44,6 +45,10 @@ export default function App() {
   const [nativeError, setNativeError] = useState('');
   const [walletOptions, setWalletOptions] = useState<{ id: string; name: string }[]>([]);
   const [walletId, setWalletId] = useState('');
+  const [evmWalletName, setEvmWalletName] = useState('');
+  const [walletConnectPrompt, setWalletConnectPrompt] = useState<{ uri?: string }>();
+  const walletConnectAbort = useRef<AbortController | undefined>(undefined);
+  const evmConnectionVersion = useRef(0);
   const [online, setOnline] = useState(navigator.onLine);
   const [pendingPayments, setPendingPayments] = useState<SavedOrder[]>([]);
   const [recoveryProblem, setRecoveryProblem] = useState('');
@@ -78,6 +83,8 @@ export default function App() {
   const orderReads = useRef(new Map<string, Promise<Order>>());
   const route = config?.routes.find((entry) => entry.id === (order?.quote.routeId || routeId));
   const source = route?.walletType === 'tron' ? tronAddress : evmAddress;
+  const walletConnectChosen = walletId === 'walletconnect';
+  const walletConnectUnavailable = walletConnectChosen && !config?.walletConnect?.projectId;
   const sourceNetwork = route?.walletType === 'evm' && route.sourceChainId === 1 ? 'Ethereum 主网' : route?.sourceChain || '付款网络';
   const networkReady = route?.walletType !== 'evm' || chainId === route.sourceChainId;
   const gasSymbol = route?.gasSymbol || (route?.walletType === 'tron' ? 'TRX' : 'ETH');
@@ -126,20 +133,24 @@ export default function App() {
     });
     return () => { active = false; };
   }, [savedOrders, order?.status, order?.sourceTxHash, isCredited, recoveryTick, online]);
+  useEffect(() => () => { walletConnectAbort.current?.abort(); }, []);
   useEffect(() => {
+    if (!evmAddress) return;
     let provider;
     try { provider = evmProvider(); } catch { return; }
+    const version = evmConnectionVersion.current;
     const changed = (...args: unknown[]) => {
+      if (version !== evmConnectionVersion.current) return;
       const accounts = args[0];
       quoteRequest.current++;
-      setEvmAddress(Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : '');
+      setEvmAddress(Array.isArray(accounts) && typeof accounts[0] === 'string' && isAddress(accounts[0]) ? accounts[0] : '');
       setRecipientConfirmed(false); setDifferentConfirmed(false); setQuote(undefined); setAllowance(undefined); setConnectedTick((n) => n + 1);
     };
-    const network = (...args: unknown[]) => { quoteRequest.current++; setChainId(typeof args[0] === 'string' ? Number.parseInt(args[0], 16) : undefined); setAllowance(undefined); setQuote(undefined); setRecipientConfirmed(false); setDifferentConfirmed(false); setConnectedTick((n) => n + 1); };
-    const disconnect = () => changed([]);
+    const network = (...args: unknown[]) => { if (version !== evmConnectionVersion.current) return; quoteRequest.current++; setChainId(typeof args[0] === 'string' ? Number.parseInt(args[0], 16) : undefined); setAllowance(undefined); setQuote(undefined); setRecipientConfirmed(false); setDifferentConfirmed(false); setConnectedTick((n) => n + 1); };
+    const disconnect = () => { if (version !== evmConnectionVersion.current) return; changed([]); setChainId(undefined); setEvmWalletName(''); };
     provider.on?.('accountsChanged', changed); provider.on?.('chainChanged', network); provider.on?.('disconnect', disconnect);
     return () => { provider.removeListener?.('accountsChanged', changed); provider.removeListener?.('chainChanged', network); provider.removeListener?.('disconnect', disconnect); };
-  }, [connectedTick]);
+  }, [connectedTick, evmAddress]);
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.source !== window || !event.data || typeof event.data !== 'object') return;
@@ -275,7 +286,8 @@ export default function App() {
   }
   function chooseWallet(nextId: string) {
     if (actionInFlight.current || paymentAttempted) return;
-    setWalletId(nextId); setEvmAddress(''); setChainId(undefined); setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
+    evmConnectionVersion.current++;
+    setWalletId(nextId); setEvmAddress(''); setEvmWalletName(''); setChainId(undefined); setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
     setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
   }
   async function checkSourceNetwork() {
@@ -292,17 +304,51 @@ export default function App() {
     setBusy(name); setError(''); setNotice('');
     try { await action(); } catch (err) { setError(errorMessage(err)); } finally { actionInFlight.current = false; setBusy(''); setProgress(''); }
   }
+  async function connectSelectedEvm(): Promise<string> {
+    evmConnectionVersion.current++;
+    setEvmAddress(''); setEvmWalletName(''); setChainId(undefined); setAllowance(undefined);
+    setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
+    let controller: AbortController | undefined;
+    try {
+      if (walletConnectChosen) {
+        if (!config?.walletConnect?.projectId) throw new Error('WalletConnect 尚未启用，请联系管理员完成配置，或选择浏览器钱包。');
+        controller = new AbortController(); walletConnectAbort.current = controller; setWalletConnectPrompt({});
+      }
+      const address = controller ? await connectEvm('walletconnect', {
+        projectId: config!.walletConnect!.projectId,
+        chainId: route?.walletType === 'evm' ? route.sourceChainId : 1,
+        onUri: (uri) => { if (walletConnectAbort.current === controller && !controller!.signal.aborted) setWalletConnectPrompt({ uri }); },
+        signal: controller.signal,
+      }) : await connectEvm(walletId || undefined);
+      if (controller?.signal.aborted) throw new Error('已取消扫码连接，可重新尝试。');
+      const currentChain = await getEvmChain();
+      if (controller?.signal.aborted) throw new Error('已取消扫码连接，可重新尝试。');
+      setEvmAddress(address); setChainId(currentChain);
+      setEvmWalletName(walletConnectChosen ? 'WalletConnect' : walletOptions.find(item => item.id === walletId)?.name || '浏览器钱包');
+      setConnectedTick((n) => n + 1);
+      return address;
+    } finally {
+      if (controller && walletConnectAbort.current === controller) { walletConnectAbort.current = undefined; setWalletConnectPrompt(undefined); }
+    }
+  }
   async function connectSource() {
     if (!route) return;
     await operation('connect', async () => {
       if (route.walletType === 'tron') setTronAddress(await connectTron());
       else {
-        const address = await connectEvm(walletId || undefined); const currentChain = await getEvmChain();
-        setEvmAddress(address); setChainId(currentChain);
+        const address = await connectSelectedEvm();
         if (!order) setRecipient((current) => current.trim() ? current : address);
       }
       setRecipientConfirmed(false); setDifferentConfirmed(false);
       setConnectedTick((n) => n + 1); invalidateQuote();
+    });
+  }
+  async function disconnectSource() {
+    await operation('disconnect', async () => {
+      evmConnectionVersion.current++; setEvmAddress(''); setEvmWalletName(''); setChainId(undefined);
+      setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
+      setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
+      await disconnectEvm();
     });
   }
   async function requestQuote() {
@@ -415,10 +461,32 @@ export default function App() {
 
   const quoteSeconds = shownQuote ? Math.max(0, Math.ceil((Date.parse(shownQuote.expiresAt) - clock) / 1000)) : 0;
   const mayCreate = !busy && !restoring && !intentBlocked && !walletCapabilityMissing && !!route?.available && !!source && networkReady && isAddress(recipient) && confirmed && !!amount && !config?.paused;
+  // Explain the existing guards without relaxing them or consenting for the user.
+  const newIntentHint = order ? undefined : (() => {
+    if (busy) return '当前操作正在处理，请稍候。';
+    if (!online) return '当前已离线，请恢复网络后重试。已有付款请继续核验原订单。';
+    if (recoveryProblem || pendingPayments.length) return '请先通过上方待核查付款提醒恢复原订单，核验完成前不能开始新入金。';
+    if (auditing || restoring) return '正在核查本机订单，请等待核验完成。';
+    if (!config) return configError ? '暂时无法读取路线信息，请使用上方“重新连接服务”重试。' : '正在读取可用路线，请稍候。';
+    if (config.paused) return '当前暂停新入金，已有订单仍可查询。';
+    if (!route) return '当前选择的路线已不在可用配置中，请重新选择付款网络和资产。';
+    if (!route.available) return route.reason || '当前路线暂不可用，请稍后重试或重新选择可用路线。';
+    if (walletCapabilityMissing) return '当前浏览器缺少安全付款能力，请使用支持 Web Locks 的新版浏览器和安全访问地址。';
+    if (!source && route.walletType === 'evm' && walletConnectUnavailable) return 'WalletConnect 尚未启用，请选择浏览器钱包，或联系管理员完成扫码配置。';
+    if (!source) return `请先点击上方“${route.walletType === 'evm' && walletConnectChosen ? '扫码连接' : '连接钱包'}”连接付款钱包，再核对并勾选 HL 接收地址确认。`;
+    if (!networkReady) return `请先将付款钱包切换至 ${sourceNetwork}，再重新核对接收地址。`;
+    if (!isAddress(recipient)) return '请先填写完整、有效的 HL 接收地址（0x 开头）。';
+    if (!recipientConfirmed) return '请核对并勾选上方的 HL 接收地址确认，再继续报价。';
+    if (differs && !differentConfirmed) return '付款与接收地址不同，请勾选第二项确认后继续。';
+    if (quote && !expired && nativeZero) return `当前没有 ${gasSymbol} 支付授权与付款手续费，暂不能继续创建付款订单。请补充后刷新付款钱包余额。`;
+    if (!amount) return '请先填写支付金额。';
+    return undefined;
+  })();
   const currentOrderReadError = orderReadIssue?.id === credential?.id ? orderReadIssue?.message : undefined;
   const progressTitle = isCredited ? '已核实到账' : localHash && !order?.sourceTxHash ? '交易编号已保留，等待核验' : credential?.submission?.state === 'signing' && !order?.sourceTxHash ? '等待钱包付款结果' : credential?.submission?.state === 'unknown' && !order?.sourceTxHash ? '付款结果待核查' : orderStatus ? labels[orderStatus] : '恢复订单中';
 
   return <div className="app-shell">
+    {walletConnectPrompt && <WalletConnectDialog uri={walletConnectPrompt.uri} onCancel={() => { walletConnectAbort.current?.abort(); setWalletConnectPrompt(undefined); }}/>}
     <header className="site-header">
       <div className="brand"><span className="brand-mark" aria-hidden="true">P<span>↗</span></span><span>Perpex</span></div>
       <div className="header-actions"><span className={`network-status ${configError || config?.paused ? 'warning' : ''}`}><i/>{configError ? '连接异常' : config?.paused ? '暂停新入金' : config ? '主网' : '连接中'}</span><button className="history-button" disabled={!!busy} onClick={() => toggleHistory(!historyOpen)} aria-label={historyOpen ? '返回当前订单' : '订单记录'}>{historyOpen ? '返回' : '订单记录'}<span aria-hidden="true">{historyOpen ? '↩' : '↗'}</span></button></div>
@@ -427,7 +495,7 @@ export default function App() {
       <div className="page-heading"><div className="eyebrow">{historyOpen ? 'YOUR ORDERS' : progressPage ? 'FUNDING STATUS' : 'YOUR WALLET → HYPERLIQUID'}</div><h1>{historyOpen ? '此浏览器的订单记录' : progressPage ? '入金进度' : '存入 Hyperliquid'}</h1><p>{historyOpen ? '选择一笔订单，继续查看或核验付款。' : progressPage ? '追踪这笔资金，直到默认 Perps 账户入账。' : '由你的钱包签名，进入自己的默认 Perps 账户。'}</p></div>
       <details className="funding-help"><summary>入金帮助：交易所、手机与到账问题</summary><div className="help-content">
         <details><summary>资产在交易所</summary><p>交易所提现不能完成本应用的授权与入金调用。请先提到自己控制的钱包，核对本页支持的网络和资产，钱包到账后再连接。不要直接向代币或路由合约转账；这里不提供平台充值地址。</p></details>
-        <details><summary>用手机或找不到钱包</summary><p>手机系统浏览器可能没有钱包接口。需在提供注入接口、持久存储和 Web Locks 的钱包浏览器中验证兼容性，或使用新版桌面浏览器。尚未接入扫码连接；手机布局适配不代表所有手机钱包已通过真实签名验收。</p>{publicSite ? <button className="text-button" disabled={!!busy} onClick={() => void operation('copy', async () => { if (!navigator.clipboard) throw new Error('此浏览器不能复制，请手动复制地址栏的 HTTPS 网址。'); await navigator.clipboard.writeText(publicSite); setNotice('已复制当前 HTTPS 网址，不含订单查询凭据。'); })}>复制当前 HTTPS 网址</button> : <p>当前为本地或非公开 HTTPS 地址，只能在对应设备访问；请等待管理员提供正式 HTTPS 网址。</p>}<p>若钱包锁定，请先解锁；拒绝连接后可重新连接。页面不会要求助记词或私钥。</p></details>
+        <details><summary>用手机或找不到钱包</summary><p>EVM 网络可使用浏览器钱包，或选择 WalletConnect，用手机钱包扫描电脑上的连接二维码。扫码需要管理员启用；Tron 付款继续使用 TronLink。页面仍需安全访问、持久存储和 Web Locks；具体手机钱包的签名兼容性需实测。</p>{publicSite ? <button className="text-button" disabled={!!busy} onClick={() => void operation('copy', async () => { if (!navigator.clipboard) throw new Error('此浏览器不能复制，请手动复制地址栏的 HTTPS 网址。'); await navigator.clipboard.writeText(publicSite); setNotice('已复制当前 HTTPS 网址，不含订单查询凭据。'); })}>复制当前 HTTPS 网址</button> : <p>当前为本地或非公开 HTTPS 地址。WalletConnect 启用后，手机可扫描电脑上的配对二维码；要在手机直接打开此页面，需使用可访问的 HTTPS 网址。</p>}<p>若钱包锁定，请先解锁；拒绝连接后可重新连接。页面不会要求助记词或私钥。</p></details>
         <details><summary>找不到资产、网络或 HL 账户</summary><p>可用范围以当前网络与资产列表为准。USDT0、Binance-Peg USDT 与普通 USDT 要按所在链和合约区分；不接受 USDC.e、Solana、法币或直接用 ETH/BNB/POL 入金，原生币仅支付手续费。</p><p>接收目标仅为自己的 Hyperliquid 默认 Perps USDC 账户，不是 Spot 或 HyperEVM 钱包余额。新账户和零余额以本次真实报价的费用与限制为准；地址格式正确不证明你能控制账户，请勿填交易所收款地址。</p></details>
         <details><summary>已经付款但还未显示到账</summary><p>先从订单记录恢复原单、核对钱包中的原交易。最终确认及本单入账证据核验可能较晚，HL 可能先到账；签名窗口到期不代表已广播交易失败。不要另建订单重付。订单凭据保存在此浏览器，换设备或清除数据后不能保证自动恢复，下载收据也不代替访问凭据。</p><button className="text-button" disabled={!!busy || !online} onClick={() => void operation('reconnect', async () => { await reloadConfig(); setBalanceTick((n) => n + 1); setOrderReadTick((n) => n + 1); setRecoveryTick((n) => n + 1); })}>刷新连接与只读核验</button></details>
       </div></details>
@@ -435,7 +503,7 @@ export default function App() {
       {config?.paused && <div className="message warning" role="status">当前暂停新入金，已有订单仍可继续核验。</div>}
       {!online && <div className="message warning" role="status">当前已离线。请保留钱包中的原交易；联网后会刷新只读状态，不会自动付款。</div>}
       {(pendingPayments.length > 0 || recoveryProblem) && <section className="message warning pending-payments" aria-label="待核查付款提醒"><strong>请先核查已有付款</strong><p>{recoveryProblem || '此浏览器存在未结清的付款。可以查看历史，但不能另建订单或再次付款。'}</p>{pendingPayments.map((item) => <button key={item.id} className="text-button" disabled={!!busy} onClick={() => openSaved(item)}>返回待核查订单 {brief(item.id)} ↗</button>)}<button className="text-button" disabled={!!busy || !online || auditing} onClick={() => { setRecoveryTick((n) => n + 1); setOrderReadTick((n) => n + 1); }}>重新核查本机订单</button></section>}
-      {walletCapabilityMissing && <div className="message warning" role="status">当前浏览器缺少安全付款能力。请使用支持 Web Locks 的新版浏览器，通过 HTTPS 打开；手机需在提供钱包注入接口的浏览器内验证兼容性。</div>}
+      {walletCapabilityMissing && <div className="message warning" role="status">当前浏览器缺少安全付款能力。请使用支持 Web Locks 的新版浏览器和安全访问地址；WalletConnect 也需要本页具备这些能力。</div>}
       {error && <div className="message error" role="alert"><strong>操作需要留意</strong><p>{error}</p></div>}
       {currentOrderReadError && <div className="message error" role="alert"><strong>暂时无法读取最新订单</strong><p>{currentOrderReadError}</p></div>}
       {notice && <div className="message success" role="status">{notice}</div>}
@@ -466,8 +534,12 @@ export default function App() {
             {route && <details className="asset-identity"><summary>代币合约与资产说明</summary><p>{route.assetNote || `${route.sourceChain} 上的 ${route.symbol}，精度 ${route.decimals} 位。`}</p><code>{route.sourceToken}</code><p>此地址用于核对代币，请勿直接转账至合约。</p></details>}
             <label className="sr-only" htmlFor="amount">支付金额</label><div className="amount-input"><input id="amount" inputMode="decimal" autoComplete="off" value={amount} placeholder="0.00" disabled={!!order || !!busy} onChange={(event) => { setAmount(event.target.value); invalidateQuote(); }}/><span>{route?.symbol || '—'}</span></div>
             <div className="amount-shortcuts" aria-label="快捷支付金额">{[25, 50, 100].map((percent) => <button key={percent} disabled={balance === undefined || !route || !config || !!order || !!busy} onClick={() => chooseAmount(percent)}>{percent === 100 ? '全部' : `${percent}%`}</button>)}</div>
-            <div className="wallet-row"><div><span className="field-label">付款钱包</span>{source ? <p className="mono full-address">{source}</p> : <p>连接 {route?.walletType === 'tron' ? 'TronLink' : 'MetaMask / Rabby'}</p>}</div><button className="secondary small" disabled={!!busy || !route} onClick={() => void connectSource()}>{busy === 'connect' ? '连接中…' : source ? '重新连接' : '连接钱包'}</button></div>
-            {route?.walletType === 'evm' && <div className="wallet-choice"><label htmlFor="evm-wallet">选择此浏览器的钱包</label><select id="evm-wallet" value={walletId} disabled={!!busy || paymentAttempted} onChange={(event) => chooseWallet(event.target.value)}><option value="">{walletOptions.length ? '自动选择（MetaMask 优先）' : '未检测到注入钱包'}</option>{walletOptions.map((wallet) => <option key={wallet.id} value={wallet.id}>{wallet.name}</option>)}</select></div>}
+            <div className="wallet-row"><div><span className="field-label">付款钱包{source && route?.walletType === 'evm' && evmWalletName ? ` · ${evmWalletName}` : ''}</span>{source ? <p className="mono full-address">{source}</p> : <p>连接 {route?.walletType === 'tron' ? 'TronLink' : walletConnectChosen ? 'WalletConnect 手机钱包' : 'MetaMask / Rabby'}</p>}</div><button className="secondary small" disabled={!!busy || !route || (route.walletType === 'evm' && walletConnectUnavailable)} onClick={() => void connectSource()}>{busy === 'connect' ? '连接中…' : source ? '重新连接' : route?.walletType === 'evm' && walletConnectChosen ? '扫码连接' : '连接钱包'}</button></div>
+            {route?.walletType === 'evm' && <><div className="wallet-choice"><label htmlFor="evm-wallet">连接方式</label><select id="evm-wallet" value={walletId} disabled={!!busy || paymentAttempted} onChange={(event) => chooseWallet(event.target.value)}><option value="">{walletOptions.length ? '浏览器钱包（MetaMask 优先）' : '浏览器钱包 · 未检测到'}</option>{walletOptions.map((wallet) => <option key={wallet.id} value={wallet.id}>{wallet.name}</option>)}<option value="walletconnect">WalletConnect · 扫码连接</option></select></div>
+              {walletConnectChosen && <p className={walletConnectUnavailable ? 'field-warning' : 'field-help'} role="status">{walletConnectUnavailable ? 'WalletConnect 尚未启用，等待管理员配置。你仍可选择浏览器钱包连接。' : '用支持 WalletConnect 的手机钱包扫描电脑上的二维码，并在手机确认连接。'}</p>}
+              {source && <button className="text-button disconnect-wallet" disabled={!!busy || paymentAttempted} onClick={() => void disconnectSource()}>断开钱包连接</button>}
+            </>}
+            {route?.walletType === 'tron' && <p className="field-help">Tron 付款使用 TronLink；WalletConnect 扫码目前仅支持 EVM 网络。</p>}
             {source && route?.walletType === 'evm' && !networkReady && <button className="network-switch" disabled={!!busy} onClick={() => void operation('switch', async () => { invalidateQuote(); setRecipientConfirmed(false); setDifferentConfirmed(false); setAllowance(undefined); await switchEvmChain(route.sourceChainId); setChainId(await getEvmChain()); setConnectedTick((n) => n + 1); })}>切换钱包至 {sourceNetwork} ↗</button>}
             {order && source && !correctWallet && <p className="field-warning">请连接本订单付款账户：<span className="mono">{order.quote.sourceAddress}</span></p>}
             {balanceError && <p className="field-warning">余额暂未读取：{balanceError}</p>}
@@ -482,7 +554,7 @@ export default function App() {
             <div className="card-topline"><span>到</span><span className="destination-network">默认 Perps 账户</span></div>
             <div className="destination-title"><span className="hype-mark" aria-hidden="true">HL</span><div><h2>Hyperliquid</h2><p>USDC · 永续合约保证金</p></div></div>
             <div className="receive-label">预计到账</div><div className="receive-amount mono">{shownQuote?.expectedReceive || '—'}<span>USDC</span></div><p className="minimum-receive">{shownQuote ? `最低到账 ${shownQuote.minReceive} USDC` : '获取实时报价后显示净到账金额'}</p>
-            <div className="recipient-section"><div className="label-line"><label htmlFor="recipient">你的 HL 接收地址</label><button className="text-button" disabled={!!order || !!busy} onClick={() => void operation('recipient', async () => { const address = evmAddress || await connectEvm(walletId || undefined); setEvmAddress(address); setChainId(await getEvmChain()); setRecipient(address); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); setConnectedTick((n) => n + 1); })}>{evmAddress ? '填入已连接地址 ↗' : '连接 EVM 钱包填入 ↗'}</button></div><input className="recipient-input mono" id="recipient" value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" disabled={!!order || !!busy} onChange={(event) => { setRecipient(event.target.value.trim()); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); }}/>{recipient && <p className="full-address mono address-preview">{recipient}</p>}{recipient && !isAddress(recipient) && <p className="field-warning">请输入完整、有效的 EVM 地址（0x 开头）。</p>}<p className="field-help">{route?.walletType === 'tron' ? 'Tron 付款地址与 HL 接收地址需要分别确认。' : '可使用付款钱包的同一 0x 地址，或填写自己控制的其他 HL 接收地址；仍需核对确认。'}</p><label className="check-row"><input type="checkbox" checked={recipientConfirmed} disabled={!isAddress(recipient) || !!busy} onChange={(event) => { setRecipientConfirmed(event.target.checked); if (!order) setQuote(undefined); }}/><span>我已核对并控制上述 HL 接收地址，确认存入其默认 Perps 账户。</span></label>{differs && <label className="check-row warning-check"><input type="checkbox" checked={differentConfirmed} disabled={!!busy} onChange={(event) => setDifferentConfirmed(event.target.checked)}/><span>付款与接收地址不同，我确认这是有意指定的接收账户。</span></label>}</div>
+            <div className="recipient-section"><div className="label-line"><label htmlFor="recipient">你的 HL 接收地址</label><button className="text-button" disabled={!!order || !!busy || (!evmAddress && walletConnectUnavailable)} onClick={() => void operation('recipient', async () => { const address = evmAddress || await connectSelectedEvm(); setRecipient(address); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); setConnectedTick((n) => n + 1); })}>{evmAddress ? '填入已连接地址 ↗' : walletConnectChosen ? '扫码连接 EVM 钱包填入 ↗' : '连接 EVM 钱包填入 ↗'}</button></div><input className="recipient-input mono" id="recipient" value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" disabled={!!order || !!busy} onChange={(event) => { setRecipient(event.target.value.trim()); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); }}/>{recipient && <p className="full-address mono address-preview">{recipient}</p>}{recipient && !isAddress(recipient) && <p className="field-warning">请输入完整、有效的 EVM 地址（0x 开头）。</p>}<p className="field-help">{route?.walletType === 'tron' ? 'Tron 付款地址与 HL 接收地址需要分别确认。' : '可使用付款钱包的同一 0x 地址，或填写自己控制的其他 HL 接收地址；仍需核对确认。'}</p><label className="check-row"><input type="checkbox" checked={recipientConfirmed} disabled={!isAddress(recipient) || !!busy} onChange={(event) => { setRecipientConfirmed(event.target.checked); if (!order) setQuote(undefined); }}/><span>我已核对并控制上述 HL 接收地址，确认存入其默认 Perps 账户。</span></label>{differs && <label className="check-row warning-check"><input type="checkbox" checked={differentConfirmed} disabled={!!busy} onChange={(event) => setDifferentConfirmed(event.target.checked)}/><span>付款与接收地址不同，我确认这是有意指定的接收账户。</span></label>}</div>
           </section>
         </div>
         <section className="card route-card" aria-label="报价费用"><div className="route-summary"><span>入金路线</span><strong>{route ? `${sourceNetwork} ${route.symbol}` : '付款钱包'} <span aria-hidden="true">→</span> HL 默认 Perps</strong></div>
@@ -495,9 +567,10 @@ export default function App() {
             <div className="order-intent"><span>已创建订单 <span className="mono">{brief(order.id)}</span></span><button className="text-button" onClick={downloadReceipt}>下载凭证 ↓</button></div>
             {route?.walletType === 'tron' && <p className="resource-note">授权与付款分别计费。每次合约操作的能量费用上限为 150 TRX；带宽及实际费用以钱包为准。旧额度不足时可能还需先归零。</p>}
             {route?.walletType === 'evm' && <p className="resource-note">{sourceNetwork}授权与付款分别消耗 {gasSymbol} 手续费。旧额度不足时，可能需要先清零再授权本笔精确额度；以钱包确认内容为准。</p>}
-            {expired || order.status === 'expired' ? <><div className="message warning"><strong>签名窗口已过期</strong><p>尚未发起付款，可以重新获取报价。已完成的代币授权不会自动撤销。</p></div><button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>重新获取报价<SymbolIcon/></button></> : !correctWallet ? <button className="primary full" disabled={!!busy || !route} onClick={() => void connectSource()}>连接本订单付款钱包<SymbolIcon kind="wallet"/></button> : !allowanceReady ? <><p className="action-explanation">{order.quote.approval ? `下一步：在钱包检查并授权本笔 ${order.quote.amount} ${route?.symbol}。授权完成后仍需确认付款。` : '下一步：检查当前链上额度，再确认钱包付款。'}</p><button className="primary full" disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void approve()}>{busy === 'approve' ? '钱包授权处理中…' : order.quote.approval ? '授权本笔额度' : '检查本笔额度'}<SymbolIcon/></button></> : <><div className="allowance-ready"><span aria-hidden="true">✓</span>代币额度已就绪，尚未付款</div><button className="primary full" disabled={!!busy || !canPay} onClick={() => void pay()}>{busy === 'pay' ? '请在钱包确认…' : `钱包签名并付款 ${order.quote.amount} ${route?.symbol}`}<SymbolIcon/></button></>}
+            {expired || order.status === 'expired' ? <><div className="message warning"><strong>签名窗口已过期</strong><p>本页没有已记录的付款。点击下方按钮会返回报价准备步骤；请重新连接付款钱包（如已断开）、核对并勾选接收地址，再获取新报价。已完成的代币授权不会自动撤销。若曾在钱包确认付款，请先核对原交易，不要重复付款。</p></div><button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>返回并重新报价<SymbolIcon/></button></> : !correctWallet ? <button className="primary full" disabled={!!busy || !route} onClick={() => void connectSource()}>连接本订单付款钱包<SymbolIcon kind="wallet"/></button> : !allowanceReady ? <><p className="action-explanation">{order.quote.approval ? `下一步：在钱包检查并授权本笔 ${order.quote.amount} ${route?.symbol}。授权完成后仍需确认付款。` : '下一步：检查当前链上额度，再确认钱包付款。'}</p><button className="primary full" disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void approve()}>{busy === 'approve' ? '钱包授权处理中…' : order.quote.approval ? '授权本笔额度' : '检查本笔额度'}<SymbolIcon/></button></> : <><div className="allowance-ready"><span aria-hidden="true">✓</span>代币额度已就绪，尚未付款</div><button className="primary full" disabled={!!busy || !canPay} onClick={() => void pay()}>{busy === 'pay' ? '请在钱包确认…' : `钱包签名并付款 ${order.quote.amount} ${route?.symbol}`}<SymbolIcon/></button></>}
             {!expired && <button className="text-button change-order" disabled={!!busy || intentBlocked} onClick={startNew}>重新填写入金</button>}
-          </> : quote && !expired ? <><p className="action-explanation">确认上述接收地址、最低到账及费用，下一步创建订单并检查代币额度。</p><button className="primary full" disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void createOrder()}>{busy === 'create' ? '正在创建订单…' : '确认报价，创建订单'}<SymbolIcon/></button></> : <><button className="primary full" disabled={!mayCreate} onClick={() => void requestQuote()}>{busy === 'quote' ? '正在获取实时路线…' : quote && expired ? '报价已过期，重新获取' : '获取实时入金报价'}<SymbolIcon/></button><p className="action-hint">获取报价不会授权代币，也不会付款。</p></>}
+          </> : quote && !expired ? <><p className="action-explanation">确认上述接收地址、最低到账及费用，下一步创建订单并检查代币额度。</p><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void createOrder()}>{busy === 'create' ? '正在创建订单…' : '确认报价，创建订单'}<SymbolIcon/></button></> : <><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!mayCreate} onClick={() => void requestQuote()}>{busy === 'quote' ? '正在获取实时路线…' : quote && expired ? '报价已过期，重新获取' : '获取实时入金报价'}<SymbolIcon/></button><p className="action-hint">获取报价不会授权代币，也不会付款。</p></>}
+          {newIntentHint && <div id="new-intent-hint" className="message warning" role="status" aria-label="入金操作提示"><strong>下一步</strong><p>{newIntentHint}</p></div>}
           {order && !confirmed && !expired && <p className="field-warning">请先核对并确认上方完整的 HL 接收地址。</p>}
           {progress && <div className="working" role="status"><span className="spinner"/>{progress}</div>}
         </section>
