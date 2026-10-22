@@ -1,13 +1,25 @@
-import type { AppConfig, Evidence, Order, OrderStatus, ProviderAdapter, Quote, QuoteRequest, StoredQuote, TrackingCheck, TrackingUpdate } from '../shared/types.js';
+import type { AppConfig, ClientStageInput, Evidence, Order, OrderStatus, ProviderAdapter, Quote, QuoteRequest, StoredQuote, TrackingCheck, TrackingUpdate } from '../shared/types.js';
 import { AppError, decimalUnits, hashSecret, newId, normalizeTxHash, orderToken, verifyToken } from './security.js';
 import { Store } from './store.js';
 import type { AttributionRecorder } from './attribution.js';
 import { solanaPayerAddress, SOLANA_ROUTE, validateSolanaInstructions } from '../shared/solana.js';
+import { observedTimings, validTime } from './order-observations.js';
+
+export interface FundingObserver {
+  publicConfig(): { enabled: true } | undefined;
+  quoteStarted(context: unknown, routeId: string, at: string): void;
+  quoteSucceeded(quoteId: string, routeId: string, context: unknown, at: string): void;
+  quoteFailed(context: unknown, routeId: string, at: string): void;
+  order(order: Order): void;
+}
 
 export interface ServiceOptions {
   tokenSecret: string; appName?: string; minAmount?: string; maxAmount?: string;
   paused?: () => boolean; now?: () => number;
   attribution?: AttributionRecorder;
+  funnel?: FundingObserver;
+  /** Coarse diagnostic only: no error text, IDs, hashes, addresses or credentials. */
+  onTrackingUnavailable?: (routeId: string) => unknown;
 }
 const stages: Partial<Record<OrderStatus, number>> = { awaiting_signature: 0, source_pending: 1, bridging: 2, verifying_credit: 3, completed: 4 };
 const publicQuote = ({ providerData: _private, ...quote }: StoredQuote): Quote => quote;
@@ -33,6 +45,14 @@ export class OrderService {
     return promise;
   }
   private timestamp(): string { return new Date(this.now()).toISOString(); }
+  private observe(action: (observer: FundingObserver) => unknown): void {
+    if (!this.options.funnel) return;
+    try {
+      const result = action(this.options.funnel);
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') void Promise.resolve(result).catch(() => {});
+    } catch { /* Optional analytics must not alter financial commits or responses. */ }
+  }
+  private observeOrder(order: Order): void { this.observe(observer => observer.order(structuredClone(order))); }
   private trackingCheck(order: Order, result: TrackingCheck['result']): TrackingCheck {
     const attemptedAt = this.timestamp();
     const succeededAt = result === 'ok' ? attemptedAt : order.trackingCheck?.succeededAt;
@@ -56,14 +76,27 @@ export class OrderService {
   }
   async config(): Promise<AppConfig> {
     const attribution = this.options.attribution?.publicConfig();
+    let funnel: { enabled: true } | undefined;
+    this.observe(observer => { funnel = observer.publicConfig(); });
     return { appName: this.options.appName ?? 'HL Funding', network: 'mainnet', routes: await this.provider.getRoutes(),
       limits: { minAmount: this.options.minAmount ?? '10', maxAmount: this.options.maxAmount ?? '1000' }, paused: this.options.paused?.() ?? false,
-      ...(attribution ? { attribution } : {}) };
+      ...(attribution ? { attribution } : {}), ...(funnel ? { funnel } : {}) };
   }
   recordLanding(context: unknown): boolean {
     return this.options.attribution?.landing(context, this.timestamp()) ?? false;
   }
-  async quote(input: QuoteRequest, attribution?: unknown): Promise<Quote> {
+  async quote(input: QuoteRequest, attribution?: unknown, funnelContext?: unknown): Promise<Quote> {
+    this.observe(observer => observer.quoteStarted(funnelContext, input.routeId, this.timestamp()));
+    try {
+      const quote = await this.makeQuote(input, attribution);
+      this.observe(observer => observer.quoteSucceeded(quote.id, quote.routeId, funnelContext, quote.observedAt!));
+      return quote;
+    } catch (error) {
+      this.observe(observer => observer.quoteFailed(funnelContext, input.routeId, this.timestamp()));
+      throw error;
+    }
+  }
+  private async makeQuote(input: QuoteRequest, attribution?: unknown): Promise<Quote> {
     this.assertOpen();
     const config = await this.config();
     const route = config.routes.find(candidate => candidate.id === input.routeId);
@@ -108,7 +141,8 @@ export class OrderService {
         validateSolanaInstructions(draft.transaction.instructions, input.sourceAddress, units.toString(), draft.protocolOrderId ?? '');
       } catch { throw new AppError('INVALID_PROVIDER_QUOTE', 'Solana 交易参数未通过核验。', 502); }
     }
-    const quote: StoredQuote = { ...draft, id: newId() };
+    const quote: StoredQuote = { ...draft, id: newId(), observedAt: this.timestamp(),
+      sourceAsset: { chain: route.sourceChain, chainId: route.sourceChainId, token: route.sourceToken, symbol: route.symbol, decimals: route.decimals } };
     this.store.saveQuote(quote);
     this.options.attribution?.quote(quote.id, quote.routeId, attribution, this.timestamp());
     return publicQuote(quote);
@@ -118,6 +152,7 @@ export class OrderService {
     const previous = this.store.getIdempotent(keyHash, quoteId);
     if (previous) {
       this.options.attribution?.order(previous);
+      this.observeOrder(previous);
       return { order: previous, accessToken: this.token(previous.id) };
     }
     this.assertOpen();
@@ -127,9 +162,11 @@ export class OrderService {
     const at = this.timestamp();
     const message = '等待用户在来源钱包确认交易。';
     const order: Order = { id: newId(), createdAt: at, updatedAt: at, quote: publicQuote(quote),
-      status: 'awaiting_signature', statusMessage: message, events: [{ at, status: 'awaiting_signature', message }] };
+      status: 'awaiting_signature', statusMessage: message, events: [{ at, status: 'awaiting_signature', message }],
+      timings: { quoteObservedAt: quote.observedAt ?? this.store.quoteObservedAt(quote.id) } };
     const saved = this.store.createOrder(order, hashSecret(this.token(order.id)), keyHash);
     this.options.attribution?.order(saved);
+    this.observeOrder(saved);
     return { order: saved, accessToken: this.token(saved.id) };
   }
   private change(order: Order, status: OrderStatus, message: string, fields: Partial<Order> = {}): Order {
@@ -137,9 +174,40 @@ export class OrderService {
     if (order.status !== status || order.statusMessage !== message) {
       next.events = [...order.events, { at: next.updatedAt, status, message: next.statusMessage }];
     }
-    this.store.updateOrder(next);
-    this.options.attribution?.order(next);
-    return next;
+    next.timings = observedTimings(next, this.store.quoteObservedAt(order.quote.id));
+    const saved = this.store.updateOrder(next);
+    this.options.attribution?.order(saved);
+    this.observeOrder(saved);
+    return saved;
+  }
+  /** First browser claim per stage, under the existing order token. Never changes money state. */
+  async recordClientStage(id: string, token: string, value: unknown): Promise<Order> {
+    this.authorize(id, token);
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join(',') !== 'eventId,observedAt,stage') {
+      throw new AppError('INVALID_CLIENT_STAGE', '客户端阶段记录格式无效。');
+    }
+    const input = value as ClientStageInput;
+    if (!['signing', 'broadcast'].includes(input.stage) || typeof input.eventId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.eventId)
+      || !validTime(input.observedAt) || Date.parse(input.observedAt) < 0
+      || Date.parse(input.observedAt) > this.now() + 5 * 60_000) {
+      throw new AppError('INVALID_CLIENT_STAGE', '客户端阶段或时间格式无效。');
+    }
+    return this.locked(id, async () => {
+      const order = this.load(id);
+      for (const [stage, event] of Object.entries(order.clientStages ?? {})) {
+        if (event.eventId === input.eventId && (stage !== input.stage || event.observedAt !== input.observedAt)) {
+          throw new AppError('CLIENT_STAGE_CONFLICT', '阶段事件编号已经用于其他记录。', 409);
+        }
+      }
+      if (order.clientStages?.[input.stage]) { this.observeOrder(order); return order; }
+      const next: Order = { ...order, clientStages: { ...order.clientStages,
+        [input.stage]: { eventId: input.eventId, observedAt: input.observedAt, receivedAt: this.timestamp() } } };
+      const saved = this.store.updateOrder(next);
+      this.observeOrder(saved);
+      return saved;
+    });
   }
   async get(id: string, token: string): Promise<Order> {
     this.authorize(id, token);
@@ -213,6 +281,11 @@ export class OrderService {
       }
     }
     const fields: Partial<Order> = { evidence };
+    if (update.status === 'completed' && validTime(update.destinationLedgerAt)
+      && Date.parse(update.destinationLedgerAt) <= this.now()
+      && Date.parse(update.destinationLedgerAt) >= Math.max(0, Date.parse(order.quote.observedAt ?? order.createdAt) - 60_000)) {
+      fields.timings = { ...order.timings, destinationLedgerAt: update.destinationLedgerAt };
+    }
     if (update.destinationTxHash) fields.destinationTxHash = update.destinationTxHash;
     if (update.providerOrderId) fields.providerOrderId = update.providerOrderId;
     if (update.creditedAmount) fields.creditedAmount = update.creditedAmount;
@@ -255,6 +328,10 @@ export class OrderService {
     } catch (error) {
       const failures = this.store.pollFailures(id) + 1;
       this.store.schedulePoll(id, this.now() + Math.min(300_000, 5000 * 2 ** Math.min(failures, 6)), failures);
+      try {
+        const diagnostic = this.options.onTrackingUnavailable?.(order.quote.routeId);
+        if (diagnostic && typeof (diagnostic as PromiseLike<unknown>).then === 'function') void Promise.resolve(diagnostic).catch(() => {});
+      } catch { /* Diagnostics are independent of order recovery. */ }
       // Unknown network/receipt state is not a failed transfer and never triggers payment or refund.
       const message = '暂时无法核验最新进度，系统会继续查询；请勿重复付款。';
       return this.change(order, order.status, message, { trackingCheck: this.trackingCheck(order, 'unavailable') });

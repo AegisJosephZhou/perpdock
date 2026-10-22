@@ -23,7 +23,7 @@ export async function getLedger(address: string, startTime: number, endTime?: nu
 /** Bounded historical recovery. Resume at the last timestamp, inclusive, as the
  * official time-range pagination contract requires. A complete pass rewinds so
  * delayed indexing can never permanently hide an earlier credit. */
-export async function scanPerpsCredit(address: string, hashes: string[], minimum: string, earliest: number, endTime: number, startTime = earliest): Promise<{ credit?: { hash: string; amount: string }; nextStartTime: number }> {
+export async function scanPerpsCredit(address: string, hashes: string[], minimum: string, earliest: number, endTime: number, startTime = earliest): Promise<{ credit?: { hash: string; amount: string; time: number }; nextStartTime: number }> {
   let cursor = Math.max(earliest, Math.min(startTime, endTime));
   for (let page = 0; page < 4; page++) {
     const ledger = await getLedger(address, cursor, endTime);
@@ -40,7 +40,7 @@ export async function scanPerpsCredit(address: string, hashes: string[], minimum
 }
 
 /** Match an exact provider fill hash and a recipient's positive DEFAULT-PERPS USDC ledger event. Never infer credit from a balance delta. */
-export function findPerpsCredit(ledger: Ledger, recipient: string, destinationHashes: string[], minimum: string, earliest: number): { hash: string; amount: string } | undefined {
+export function findPerpsCredit(ledger: Ledger, recipient: string, destinationHashes: string[], minimum: string, earliest: number): { hash: string; amount: string; time: number } | undefined {
   const hashes = new Set(destinationHashes.map(h => h.toLowerCase()));
   for (const entry of ledger) {
     if (entry.time < earliest || !hashes.has(entry.hash.toLowerCase())) continue;
@@ -52,7 +52,7 @@ export function findPerpsCredit(ledger: Ledger, recipient: string, destinationHa
     else continue; // Unknown credit classes remain verifying_credit; never guess spot/perps semantics.
     if (typeof amount !== 'string' || !/^\d+(\.\d{1,8})?$/.test(amount)) continue;
     if (parseUnits(amount, 8) < parseUnits(minimum, 8) || parseUnits(amount, 8) <= 0n) continue;
-    return { hash: entry.hash, amount };
+    return { hash: entry.hash, amount, time: entry.time };
   }
   return undefined;
 }

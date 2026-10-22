@@ -1,5 +1,13 @@
 # 验收记录
 
+## 2026-10-22：监控、完整漏斗与入金运营记录
+
+新增默认关闭的 Sentry 前后端错误监控、匿名完整漏斗与 PostHog 有界持久队列、授权签名/广播声明及服务器观察/目标账本时间、只读逐单 CSV/JSON 和成功率/耗时/卡单报告；另提供 Better Stack 每60秒外部探测配置工具，默认只生成离线计划。见 [监控说明](OBSERVABILITY.md)、[漏斗](FUNNEL.md)、[入金运营记录](ORDER-OPERATIONS.md)。
+
+Node 24.19.0 最终 **763/763 应用测试（37文件，无跳过）、57/57 部署及 uptime 工具检查、TypeScript、Vite 与服务端/报告编译通过**。独立交叉审查修复了缺源确认时间旧单的成功率分母、末次发送中断后的丢弃计数、会话轮换漏记 landing、uptime URL 路径大小写回读及启用 Sentry 后部署 CSP 检查适配。测试使用合成供应商、临时数据库和假 SaaS transport；实际 Sentry SDK envelope 的字段及附件过滤有验证。
+
+生产依赖审计仍为0 high/critical、4 moderate，与 Solana 基线一致；构建体积提示保留。未合并、未部署、未创建外部监控、未向真实 Sentry/PostHog 项目发送数据，也未读取生产订单或进行真实钱包操作。凭据配置、SaaS实际收数、60秒监控生效与告警送达待后续获准启用后验收。以下为此前功能验收，不替代本轮状态。
+
 ## 2026-10-22：Solana 原生 USDC
 
 新增 Solana 原生 USDC → Hyperliquid 默认 Perps，Phantom / Solflare 浏览器扩展路径；范围与 RPC 限制见 [Solana 说明](SOLANA.md)。当前代码八个网络、十条路线，前轮中英文与可选归因保留。

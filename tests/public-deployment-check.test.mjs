@@ -18,6 +18,11 @@ const security = {
 const wcProjectId = '0123456789abcdef'.repeat(2);
 const wcConnect = 'wss://relay.walletconnect.com wss://relay.walletconnect.org https://verify.walletconnect.com https://verify.walletconnect.org https://ethereum.publicnode.com https://arbitrum-one.publicnode.com https://base.drpc.org https://optimism.publicnode.com https://polygon-bor-rpc.publicnode.com https://bsc-rpc.publicnode.com';
 const wcSecurity = { ...security, 'content-security-policy': security['content-security-policy'].replace('https://api.mainnet-beta.solana.com;', `https://api.mainnet-beta.solana.com ${wcConnect};`) + '; frame-src https://verify.walletconnect.org' };
+const sentryKey = 'a1b2c3d4'.repeat(4);
+const sentryOrigin = 'https://o12345.ingest.us.sentry.io';
+const monitoring = { enabled: true, dsn: `https://${sentryKey}@o12345.ingest.us.sentry.io/67890`, environment: 'production', release: '884143d' };
+const withConnectSource = (headers, source) => ({ ...headers,
+  'content-security-policy': headers['content-security-policy'].replace('https://api.mainnet-beta.solana.com', `https://api.mainnet-beta.solana.com ${source}`) });
 const config = () => ({ appName: 'Perpex', network: 'mainnet', paused: true, limits: { minAmount: '10', maxAmount: '100' },
   routes: [{ id: 'ethereum-usdt-hypercore', sourceChainId: 1, symbol: 'USDT', decimals: 6, walletType: 'evm', available: true, reason: secret,
     sourceToken: secret, privateMetadata: secret }], privateMetadata: secret });
@@ -215,6 +220,74 @@ test('rejects partial or expanded WalletConnect CSP and invalid advertised IDs',
   for (const walletConnect of [null, {}, { projectId: secret }, { projectId: '' }, { projectId: 'a'.repeat(31) }]) {
     const { report } = await inspect(url => url === `${origin}/api/config` ? json({ ...config(), walletConnect }) : undefined);
     failure(report, 'paused_config', 'INVALID_WALLETCONNECT_CONFIG');
+  }
+});
+
+test('accepts exactly one configured Sentry origin, including alongside WalletConnect, and only reports booleans', async () => {
+  for (const walletConnectConfigured of [false, true]) {
+    const { report, calls } = await inspect(url => {
+      if (url === `${origin}/`) return new Response(html, { headers: withConnectSource(walletConnectConfigured ? wcSecurity : security, sentryOrigin) });
+      if (url === `${origin}/api/config`) return json({ ...config(), monitoring, funnel: { enabled: true },
+        ...(walletConnectConfigured ? { walletConnect: { projectId: wcProjectId } } : {}) });
+    });
+    assert.equal(report.status, 'passed');
+    assert.equal(report.configSnapshot.monitoringConfigured, true);
+    assert.equal(report.configSnapshot.funnelConfigured, true);
+    assert.equal(report.configSnapshot.walletConnectConfigured, walletConnectConfigured);
+    for (const omitted of [sentryKey, sentryOrigin, monitoring.dsn, monitoring.release, '67890']) assert.equal(JSON.stringify(report).includes(omitted), false);
+    assert.ok(calls.every(call => !call.url.includes('sentry.io') && !call.url.includes('posthog.com')));
+  }
+  const { report } = await inspect();
+  assert.equal(report.configSnapshot.monitoringConfigured, false);
+  assert.equal(report.configSnapshot.funnelConfigured, false);
+});
+
+test('Sentry CSP and public monitoring configuration must agree on presence and exact organization origin', async () => {
+  for (const [source, configured] of [[sentryOrigin, undefined], [undefined, monitoring], ['https://o98765.ingest.us.sentry.io', monitoring]]) {
+    const { report } = await inspect(url => {
+      if (url === `${origin}/` && source) return new Response(html, { headers: withConnectSource(security, source) });
+      if (url === `${origin}/api/config` && configured) return json({ ...config(), monitoring: configured });
+    });
+    failure(report, 'paused_config', 'MONITORING_CSP_CONFIG_MISMATCH');
+    assert.equal(JSON.stringify(report).includes(sentryKey), false);
+    assert.equal(JSON.stringify(report).includes('sentry.io'), false);
+  }
+});
+
+test('rejects wildcard, duplicate, multiple, credentialed or path-qualified Sentry CSP sources', async () => {
+  for (const source of ['https://*.ingest.us.sentry.io', 'https://o12345.ingest.*.sentry.io',
+    `${sentryOrigin} ${sentryOrigin}`, `${sentryOrigin} https://o54321.ingest.us.sentry.io`,
+    monitoring.dsn, `${sentryOrigin}/`, `${sentryOrigin}/api/67890/envelope/`, `${sentryOrigin}?key=${sentryKey}`,
+    'https://o12345.ingest.us.sentry.io.attacker.invalid', 'https://o12345.ingest.us.sentry.io:443']) {
+    const { report } = await inspect(url => {
+      if (url === `${origin}/`) return new Response(html, { headers: withConnectSource(security, source) });
+      if (url === `${origin}/api/config`) return json({ ...config(), monitoring });
+    });
+    failure(report, 'security_headers', 'UNREVIEWED_CSP');
+    assert.equal(JSON.stringify(report).includes(sentryKey), false);
+  }
+});
+
+test('rejects malformed monitoring DSNs or unexpected public fields without exposing them', async () => {
+  const invalidDsns = [secret, monitoring.dsn.replace('https:', 'http:'), monitoring.dsn.replace('@', ':password@'),
+    monitoring.dsn.replace('o12345.ingest.us.sentry.io', 'collector.attacker.invalid'), `${monitoring.dsn}?key=${secret}`,
+    `${monitoring.dsn}#${secret}`, monitoring.dsn.replace('/67890', '/0'), monitoring.dsn.replace(sentryKey, 'a'.repeat(31)),
+    monitoring.dsn.replace('.io/', '.io:444/'), monitoring.dsn.replace('/67890', '/67890/extra')];
+  for (const value of [null, {}, { ...monitoring, enabled: false }, { ...monitoring, environment: secret },
+    { ...monitoring, release: secret }, { ...monitoring, projectKey: secret }, ...invalidDsns.map(dsn => ({ ...monitoring, dsn }))]) {
+    const { report } = await inspect(url => url === `${origin}/api/config` ? json({ ...config(), monitoring: value }) : undefined);
+    failure(report, 'paused_config', 'INVALID_MONITORING_CONFIG');
+    assert.equal(JSON.stringify(report).includes(sentryKey), false);
+    assert.equal(report.configSnapshot, undefined);
+  }
+});
+
+test('funnel public config accepts only an enabled flag and never reports provider metadata', async () => {
+  for (const funnel of [null, {}, { enabled: false }, { enabled: 'true' }, { enabled: true, projectKey: secret },
+    { enabled: true, host: 'https://us.i.posthog.com' }]) {
+    const { report } = await inspect(url => url === `${origin}/api/config` ? json({ ...config(), funnel }) : undefined);
+    failure(report, 'paused_config', 'INVALID_FUNNEL_CONFIG');
+    assert.equal(report.configSnapshot, undefined);
   }
 });
 

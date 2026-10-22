@@ -45,11 +45,14 @@ export class Store {
 
   saveQuote(quote: StoredQuote): void {
     this.db.prepare('INSERT INTO quotes(id, payload, expires_at, created_at) VALUES (?, ?, ?, ?)')
-      .run(quote.id, JSON.stringify(quote), quote.expiresAt, new Date().toISOString());
+      .run(quote.id, JSON.stringify(quote), quote.expiresAt, quote.observedAt ?? new Date().toISOString());
   }
   getQuote(id: string): StoredQuote | undefined {
     const row = this.db.prepare('SELECT payload FROM quotes WHERE id = ?').get(id) as { payload: string } | undefined;
     return row ? JSON.parse(row.payload) as StoredQuote : undefined;
+  }
+  quoteObservedAt(id: string): string | undefined {
+    return (this.db.prepare('SELECT created_at FROM quotes WHERE id = ?').get(id) as { created_at: string } | undefined)?.created_at;
   }
   patchQuoteProviderData(id: string, patch: ProviderData): void {
     // Adapter state is private JSON, not an arbitrary executable object. In
@@ -106,11 +109,15 @@ export class Store {
       return order;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  updateOrder(order: Order): void {
+  updateOrder(order: Order): Order {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const previous = this.getOrder(order.id)?.order;
       if (!previous) throw new AppError('ORDER_NOT_FOUND', '未找到订单。', 404);
+      // A slow funds query may hold an older snapshot. Preserve already accepted
+      // browser observations without allowing them to merge/override money state.
+      if (previous.clientStages || order.clientStages) order = { ...order,
+        clientStages: { ...order.clientStages, ...previous.clientStages } };
       const chainIdentity = order.quote.transaction.kind === 'evm' ? `evm:${order.quote.transaction.chainId}` : `${order.quote.transaction.kind}:mainnet`;
       // A not-yet-visible hash is a claim, not ownership of a transfer. Reserving
       // it before final verification would let an unrelated pending order block
@@ -129,6 +136,7 @@ export class Store {
           .run(order.id, event.at, event.status, event.message);
       }
       this.db.exec('COMMIT');
+      return order;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   dueOrders(now: number, limit = 20): Order[] {
@@ -142,6 +150,10 @@ export class Store {
   }
   pollFailures(id: string): number {
     return (this.db.prepare('SELECT poll_failures FROM orders WHERE id = ?').get(id) as { poll_failures: number } | undefined)?.poll_failures ?? 0;
+  }
+  ready(): boolean {
+    try { this.db.prepare('SELECT 1 FROM orders LIMIT 1').get(); return true; }
+    catch { return false; }
   }
   close(): void { this.db.close(); }
 }

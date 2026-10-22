@@ -6,40 +6,54 @@ import { loadTokenSecret } from './security.js';
 import * as providers from './providers/index.js';
 import type { ProviderAdapter } from '../shared/types.js';
 import { attributionConfiguration, AttributionRecorder } from './attribution.js';
+import { createServerMonitoring, monitoringConfiguration } from './observability.js';
+import { funnelConfiguration, FunnelRecorder } from './funnel.js';
 
 const production = process.env.NODE_ENV === 'production';
 // Fail invalid public configuration before opening the order store or creating a local key.
 const walletConnect = walletConnectConfig(process.env.WALLETCONNECT_PROJECT_ID);
+const monitoringConfig = monitoringConfiguration(process.env.SENTRY_ENABLED, process.env.SENTRY_DSN,
+  process.env.SENTRY_ENVIRONMENT, process.env.SENTRY_RELEASE);
+if (process.env.SENTRY_ENABLED === 'true' && !monitoringConfig) throw new Error('SENTRY_ENABLED requires a valid Sentry SaaS DSN, environment and release configuration.');
+const funnelConfig = funnelConfiguration(process.env.FUNNEL_ENABLED, process.env.POSTHOG_ENABLED,
+  process.env.POSTHOG_PROJECT_KEY, process.env.POSTHOG_HOST);
+const monitoring = createServerMonitoring(monitoringConfig);
 const dataDir = resolve(process.env.DATA_DIR ?? 'data');
 const tokenSecret = loadTokenSecret(resolve(dataDir, 'order-token.key'), process.env.ORDER_TOKEN_SECRET, production);
 const store = new Store(resolve(dataDir, 'funding.sqlite'));
 const attributionConfig = attributionConfiguration(process.env.ATTRIBUTION_ENABLED, process.env.ATTRIBUTION_CAMPAIGNS);
 const attribution = attributionConfig ? new AttributionRecorder(resolve(dataDir, 'attribution.sqlite'), attributionConfig) : undefined;
+const funnel = funnelConfig ? new FunnelRecorder(resolve(dataDir, 'funnel.sqlite'), funnelConfig) : undefined;
 const service = new OrderService(store, providers satisfies ProviderAdapter, {
   tokenSecret, appName: process.env.APP_NAME ?? 'Perpex',
   minAmount: process.env.MIN_AMOUNT ?? '10', maxAmount: process.env.MAX_AMOUNT ?? '1000',
   paused: () => process.env.PAUSE_NEW_ORDERS === 'true',
-  attribution,
+  attribution, funnel,
+  onTrackingUnavailable: routeId => monitoring.report({ stage: 'order_tracking', code: 'UPSTREAM_UNAVAILABLE', routeId }),
 });
 const publicOrigin = process.env.PUBLIC_ORIGIN;
 if (production && !publicOrigin) throw new Error('Production requires PUBLIC_ORIGIN.');
 const origins = publicOrigin ? [new URL(publicOrigin).origin] : ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8787', 'http://127.0.0.1:8787'];
 if (process.env.TRUST_PROXY_HOPS && process.env.TRUST_PROXY_HOPS !== '1') throw new Error('TRUST_PROXY_HOPS must be omitted or 1.');
 const app = createApp(service, { allowedOrigins: origins, staticDir: resolve('dist/client'),
+  monitoring: monitoringConfig, monitoringReporter: monitoring, funnel,
   ...(walletConnect ? { walletConnectProjectId: walletConnect.projectId } : {}),
   ...(process.env.TRUST_PROXY_HOPS === '1' ? { trustProxyHops: 1 } : {}) });
 const port = Number(process.env.PORT ?? 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT is invalid.');
 const server = app.listen(port, process.env.HOST ?? '127.0.0.1', (error?: Error) => {
   if (error) {
+    monitoring.report({ stage: 'server_start', code: 'SERVER_START_FAILED' });
     console.error(JSON.stringify({ event: 'server_listen_failed', code: (error as NodeJS.ErrnoException).code ?? 'UNKNOWN' }));
     store.close();
     attribution?.close();
+    void Promise.allSettled([funnel?.close(), monitoring.flush(1000).then(() => monitoring.close())]);
     process.exitCode = 1;
     return;
   }
   console.info(JSON.stringify({ event: 'server_started', port, production }));
   service.startPolling();
+  funnel?.startExport();
   // Warm the reviewed RPC health cache so the first page load is not slowed by
   // throttled public nodes. A failure is tolerated: the config route fails open.
   void providers.getRoutes().catch(() => {});
@@ -50,7 +64,11 @@ let closing = false;
 const shutdown = (): void => {
   if (closing) return;
   closing = true;
-  server.close(() => { void service.stop().then(() => { store.close(); attribution?.close(); process.exit(0); }); });
+  server.close(() => { void service.stop().then(async () => {
+    store.close(); attribution?.close();
+    await Promise.allSettled([funnel?.close(), monitoring.flush(1000).then(() => monitoring.close())]);
+    process.exit(0);
+  }); });
   setTimeout(() => process.exit(1), 10_000).unref();
 };
 process.once('SIGTERM', shutdown);

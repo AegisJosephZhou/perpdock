@@ -1,6 +1,7 @@
 import type { Order, Quote } from '../shared/types.js';
 import { api, errorMessage, persistSavedOrder, savedOrderForPayment, withOrderPaymentLock, type SavedOrder } from './api.js';
 import { isWalletRejection } from './wallets.js';
+import { newFunnelAttempt, reportOrderStage, trackFunnel } from './funnel.js';
 
 interface PaymentFlow {
   saved: SavedOrder;
@@ -33,16 +34,25 @@ export async function executeOrderPayment(flow: PaymentFlow): Promise<void> {
     // If either storage write fails, execution cannot reach the signing provider.
     remember({ ...saved, submission: { state: 'signing' } });
     flow.onProgress('请核对钱包内的付款内容并签名。');
+    const attemptId = newFunnelAttempt();
+    reportOrderStage(saved, 'signing');
     let hash: string | undefined;
+    let broadcastReturned = false;
     try {
       hash = await flow.sign(latest.quote, (txHash) => {
         hash = txHash;
         remember({ ...saved, submission: { state: 'submitted', txHash } });
+        // Solana saves its signature before RPC broadcast; this is not a broadcast success.
+        trackFunnel('payment_reference_observed', { attemptId, walletType: latest.quote.transaction.kind });
       });
+      broadcastReturned = true;
+      reportOrderStage(saved, 'broadcast');
       flow.onProgress('交易已提交，正在保存链上凭证。');
       flow.onOrder(await api.report(saved.id, saved.accessToken, hash));
     } catch (error) {
       const rejected = !hash && isWalletRejection(error);
+      trackFunnel(broadcastReturned ? 'source_report_failed' : hash ? 'payment_outcome_unknown' : rejected ? 'signing_rejected' : 'signing_failed',
+        { attemptId, walletType: latest.quote.transaction.kind });
       const next: SavedOrder = rejected ? { ...saved, submission: undefined } : { ...saved, submission: { state: 'unknown', ...(hash ? { txHash: hash } : {}) } };
       flow.onSaved(next);
       try { remember(next); } catch { /* Memory retains the hash; the durable signing marker remains conservative. */ }

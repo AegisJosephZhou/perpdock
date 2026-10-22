@@ -11,6 +11,7 @@
 - Solana：Phantom / Solflare 浏览器扩展，另填独立的 `0x` Hyperliquid 收款地址，需要 SOL 手续费。详见 [Solana 说明](docs/SOLANA.md)。
 - 中英文界面、网络与币种选择、真实余额、报价净额与最低到账、订单进度、收据及中断恢复。
 - 可选的第一方推广归因默认关闭；配置方式见 [推广配套开发说明](docs/GROWTH-RELEASE.md)。
+- 入金运营记录与离线报表、可选 Sentry 错误监控和 PostHog 漏斗、Better Stack 每分钟监控配置工具；见 [监控说明](docs/OBSERVABILITY.md)。外部采集默认关闭，代码交付不等于生产已启用。
 
 React + Vite 前端，Node/Express 后端，SQLite 持久化。Relay 提供实时报价与结算；服务端独立核验来源付款及可归属的 Hyperliquid 账本。生产代码不提供模拟报价、余额或虚构到账。服务端不保管用户私钥，不代用户转账。
 

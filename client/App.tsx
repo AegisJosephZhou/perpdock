@@ -1,5 +1,6 @@
 import { useI18n, formatTime } from './i18n.js';
 import { startAttribution } from './attribution.js';
+import { newFunnelAttempt, startFunnel, trackFunnel } from './funnel.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatUnits, isAddress, parseUnits } from 'viem';
 import type { Account, AppConfig, Order, OrderStatus, Quote, Route } from '../shared/types.js';
@@ -52,6 +53,7 @@ export default function App() {
   const { t, locale, setLocale } = useI18n();
   const [config, setConfig] = useState<AppConfig>();
   useEffect(() => { if (config) startAttribution(config.attribution, locale); }, [config?.attribution, !!config, locale]);
+  useEffect(() => { if (config) startFunnel(config.funnel, locale); }, [config?.funnel, !!config, locale]);
   useEffect(() => {
     document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN';
     document.title = locale === 'en' ? 'Dock by Perpex · Fund Hyperliquid' : 'Dock by Perpex · 存入 Hyperliquid';
@@ -353,11 +355,13 @@ export default function App() {
     setBusy(name); setError(''); setNotice('');
     try { await action(); } catch (err) { setError(errorMessage(err)); } finally { actionInFlight.current = false; setBusy(''); setProgress(''); }
   }
-  async function connectSelectedEvm(): Promise<string> {
+  async function connectSelectedEvm(observe = true): Promise<string> {
     evmConnectionVersion.current++;
     setEvmAddress(''); setEvmWalletName(''); setChainId(undefined); setAllowance(undefined);
     setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
     let controller: AbortController | undefined;
+    const attemptId = observe ? newFunnelAttempt() : undefined;
+    if (observe) trackFunnel('wallet_connect_started', { attemptId, walletType: 'evm' });
     try {
       if (walletConnectChosen) {
         if (!config?.walletConnect?.projectId) throw new Error('WalletConnect 尚未启用，请联系管理员完成配置，或选择浏览器钱包。');
@@ -375,7 +379,11 @@ export default function App() {
       setEvmAddress(address); setChainId(currentChain);
       setEvmWalletName(walletConnectChosen ? 'WalletConnect' : walletOptions.find(item => item.id === walletId)?.name || '浏览器钱包');
       setConnectedTick((n) => n + 1);
+      if (observe) trackFunnel('wallet_connect_succeeded', { attemptId, walletType: 'evm' });
       return address;
+    } catch (error) {
+      if (observe) trackFunnel('wallet_connect_failed', { attemptId, walletType: 'evm' });
+      throw error;
     } finally {
       if (controller && walletConnectAbort.current === controller) { walletConnectAbort.current = undefined; setWalletConnectPrompt(undefined); }
     }
@@ -383,14 +391,22 @@ export default function App() {
   async function connectSource() {
     if (!route) return;
     await operation('connect', async () => {
+      const attemptId = newFunnelAttempt();
+      trackFunnel('wallet_connect_started', { attemptId, walletType: route.walletType });
+      try {
       if (route.walletType === 'tron') setTronAddress(await connectTron());
       else if (route.walletType === 'solana') { setSolanaAddress(await connectSolana(solanaWalletId || undefined)); setSolanaWalletName(selectedSolanaWalletName() || ''); }
       else {
-        const address = await connectSelectedEvm();
+        const address = await connectSelectedEvm(false);
         if (!order) setRecipient((current) => current.trim() ? current : address);
       }
       setRecipientConfirmed(false); setDifferentConfirmed(false);
       setConnectedTick((n) => n + 1); invalidateQuote();
+      trackFunnel('wallet_connect_succeeded', { attemptId, walletType: route.walletType });
+      } catch (error) {
+        trackFunnel('wallet_connect_failed', { attemptId, walletType: route.walletType });
+        throw error;
+      }
     });
   }
   async function disconnectSource() {
@@ -413,7 +429,9 @@ export default function App() {
       const requestId = ++quoteRequest.current;
       await checkSourceNetwork();
       if (requestId !== quoteRequest.current) return;
-      const next = await api.quote({ routeId: route.id, amount, sourceAddress: source, recipient });
+      let next: Quote;
+      try { next = await api.quote({ routeId: route.id, amount, sourceAddress: source, recipient }); }
+      catch (error) { trackFunnel('quote_response_failed', { walletType: route.walletType }); throw error; }
       if (requestId !== quoteRequest.current) return;
       validateQuoteContext(next, route, source, recipient); setQuote(next);
     }));
@@ -426,7 +444,11 @@ export default function App() {
       if (requestId !== quoteRequest.current) return;
       validateQuoteContext(quote, route, source, recipient);
       if (!creationKey.current || creationKey.current.quoteId !== quote.id) creationKey.current = { quoteId: quote.id, key: crypto.randomUUID() };
-      const created = await api.createOrder(quote.id, creationKey.current.key);
+      const attemptId = newFunnelAttempt();
+      trackFunnel('order_create_started', { attemptId, walletType: route.walletType });
+      let created: Awaited<ReturnType<typeof api.createOrder>>;
+      try { created = await api.createOrder(quote.id, creationKey.current.key); }
+      catch (error) { trackFunnel('order_create_failed', { attemptId, walletType: route.walletType }); throw error; }
       const entry: SavedOrder = { id: created.order.id, accessToken: created.accessToken, createdAt: created.order.createdAt };
       setOrder(created.order); setCredential(entry); remember(entry);
     }));
