@@ -1,10 +1,11 @@
+import { useI18n, formatTime } from './i18n.js';
 import type { Order } from '../shared/types.js';
 import { orderProgress, trackingFreshness } from './order-progress.js';
 
-const formatTime = (date: string) => new Date(date).toLocaleString('zh-CN', { hour12: false });
 export default function OrderProgress({ order, credited, now, online, readError, localHash }: {
   order: Order; credited: boolean; now: number; online: boolean; readError?: string; localHash?: string;
 }) {
+  const { t } = useI18n();
   const facts = orderProgress(order, credited);
   const check = trackingFreshness(order, now);
   const attention = order.status === 'attention';
@@ -26,15 +27,15 @@ export default function OrderProgress({ order, credited, now, online, readError,
     { title: '核验 HL 入账', done: credited, active: facts.routeReported && !credited,
       text: credited ? '已按本单交易及金额核实默认 Perps USDC 入账。' : '尚未核实本单进入默认 Perps 账户，路由完成或账户余额变化不能代替入账证据。' },
   ];
-  return <section className="card progress-card" aria-label="订单核验进度">
-    <div className="confirmed-progress"><span>最后已确认的资金步骤</span><strong>{facts.lastConfirmed}</strong>{facts.confirmedAt && <small>确认记录时间 <time dateTime={facts.confirmedAt}>{formatTime(facts.confirmedAt)}</time></small>}</div>
-    <div className="vertical-steps">{steps.map((step, index) => <div className={`progress-step ${step.done ? 'done' : step.active ? 'active' : ''}`} key={step.title}><div className="step-track"><span>{step.done ? '✓' : index + 1}</span></div><div><h2>{step.title}</h2><p>{step.text}</p></div></div>)}</div>
-    <div className="query-freshness" aria-label="状态查询时间">
-      <span>最近成功查询 <strong>{check.succeededAt ? <time dateTime={check.succeededAt}>{formatTime(check.succeededAt)}</time> : '暂无记录'}</strong></span>
-      {check.attemptedAt && check.state === 'unavailable' && <small>最近查询尝试 <time dateTime={check.attemptedAt}>{formatTime(check.attemptedAt)}</time></small>}
-      <small>查询成功只表示取得查询结果，不代表资金已到账。</small>
+  return <section className="card progress-card" aria-label={t("订单核验进度")}>
+    <div className="confirmed-progress"><span>{t("最后已确认的资金步骤")}</span><strong>{t(facts.lastConfirmed)}</strong>{facts.confirmedAt && <small>{t("确认记录时间 ")}<time dateTime={facts.confirmedAt}>{formatTime(facts.confirmedAt)}</time></small>}</div>
+    <div className="vertical-steps">{steps.map((step, index) => <div className={`progress-step ${step.done ? 'done' : step.active ? 'active' : ''}`} key={t(step.title)}><div className="step-track"><span>{step.done ? '✓' : index + 1}</span></div><div><h2>{t(step.title)}</h2><p>{t(step.text)}</p></div></div>)}</div>
+    <div className="query-freshness" aria-label={t("状态查询时间")}>
+      <span>{t("最近成功查询 ")}<strong>{check.succeededAt ? <time dateTime={check.succeededAt}>{formatTime(check.succeededAt)}</time> : t('暂无记录')}</strong></span>
+      {check.attemptedAt && check.state === 'unavailable' && <small>{t("最近查询尝试 ")}<time dateTime={check.attemptedAt}>{formatTime(check.attemptedAt)}</time></small>}
+      <small>{t("查询成功只表示取得查询结果，不代表资金已到账。")}</small>
     </div>
-    {warning && <p className="progress-query-warning" role="status">{warning}</p>}
-    {(message || order.quote.warnings.length > 0) && <div className="order-message">{message && <p>{message}</p>}{order.quote.warnings.map((text, index) => <p className="quote-warning" key={index}>{text}</p>)}</div>}
+    {warning && <p className="progress-query-warning" role="status">{t(warning)}</p>}
+    {(message || order.quote.warnings.length > 0) && <div className="order-message">{message && <p>{t(message)}</p>}{order.quote.warnings.map((text, index) => <p className="quote-warning" key={index}>{t(text)}</p>)}</div>}
   </section>;
 }

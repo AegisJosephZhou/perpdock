@@ -16,6 +16,8 @@ const quoteInput = z.object({
   amount: z.string().min(1).max(72).regex(/^\d{1,40}(?:\.\d{1,30})?$/),
   sourceAddress: z.string().min(30).max(64),
   recipient: z.string().regex(/^0x[\da-fA-F]{40}$/),
+  // Optional metadata is validated independently; malformed analytics must not reject valid funding.
+  attribution: z.unknown().optional(),
 }).strict();
 const orderInput = z.object({ quoteId: z.string().regex(/^[\w-]{32}$/) }).strict();
 const transactionInput = z.object({ txHash: z.string().min(64).max(66) }).strict();
@@ -78,6 +80,16 @@ export function createApp(service: OrderService, options: HttpOptions): express.
     if (req.method === 'OPTIONS') { res.status(204).end(); return; }
     next();
   });
+  app.post('/api/attribution/landing', rateLimit({ windowMs: 60_000, limit: 20,
+    standardHeaders: 'draft-8', legacyHeaders: false,
+    handler: (_req, res) => { res.status(429).json({ accepted: false }); },
+  }), (req, res, next) => {
+    if (!req.is('application/json')) { res.status(415).json({ accepted: false }); return; }
+    next();
+  }, express.json({ limit: '1kb', strict: true }), (req, res) => {
+    res.json({ accepted: service.recordLanding(req.body) });
+  });
+  // Analytics has its own budget and cannot consume the funding API's shared rate limit.
   app.use('/api', rateLimit({ windowMs: 60_000, limit: options.rateLimitMax ?? 120,
     standardHeaders: 'draft-8', legacyHeaders: false,
     handler: (_req, _res, next) => next(new AppError('RATE_LIMITED', '请求过于频繁，请稍后再试。', 429)),
@@ -107,7 +119,10 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   app.get('/api/config', asyncRoute(async (_req, res) => {
     res.json({ ...await service.config(), ...(walletConnect ? { walletConnect } : {}) });
   }));
-  app.post('/api/quotes', asyncRoute(async (req, res) => { res.status(201).json(await service.quote(parse(quoteInput, req.body))); }));
+  app.post('/api/quotes', asyncRoute(async (req, res) => {
+    const { attribution, ...input } = parse(quoteInput, req.body);
+    res.status(201).json(await service.quote(input, attribution));
+  }));
   app.post('/api/orders', (req, res, next) => {
     try {
       const { quoteId } = parse(orderInput, req.body);

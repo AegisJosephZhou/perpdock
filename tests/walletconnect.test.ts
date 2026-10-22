@@ -68,6 +68,7 @@ describe('WalletConnect SDK boundary and pinned wallet lifecycle', () => {
     const config = init.mock.calls[0]![0];
     expect(config).toMatchObject({ projectId, chains: [1], showQrModal: false, telemetryEnabled: false, logger: 'silent', relayUrl: 'wss://relay.walletconnect.org' });
     expect(new Set([1, ...config.optionalChains])).toEqual(new Set([1, 42161, 8453, 10, 137, 56]));
+    expect(config.metadata).toMatchObject({ name: 'Dock by Perpex', url: page.location.origin });
     expect(config.rpcMap).toEqual(WALLETCONNECT_RPC_MAP); expect(Object.values(config.rpcMap).every(url => typeof url === 'string' && url.startsWith('https://'))).toBe(true);
     expect(config.methods).toEqual(['eth_sendTransaction']); expect(config.optionalMethods).toEqual(['wallet_switchEthereumChain', 'wallet_getCapabilities']);
     expect(await config.storage.getKeys()).toEqual([]);
