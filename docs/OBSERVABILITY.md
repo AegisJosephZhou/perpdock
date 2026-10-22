@@ -29,6 +29,16 @@ Automatic SDK integrations, user context, cookies, request/response bodies, head
 
 To verify after an approved release, use an isolated staging project and synthetic actions: trigger a render error and an API failure, inspect the final received event fields, and match a request ID to server logs. Do not use real wallet signing as a monitoring test.
 
+### Isolated upstream failure drill
+
+Run `npm test -- tests/observability-failure-drill.test.ts` to close a loopback upstream while exercising the real HTTP handler, SQLite stores and Sentry SDK. All providers, transactions and DSNs in this drill are synthetic. A custom SDK transport sends JSON envelopes only to a local HTTP receiver; this verifies event generation and local delivery, **not the production transport or receipt by Sentry SaaS**. Set `DOCK_FAILURE_DRILL_EVIDENCE` to a private output directory to save the checked event payloads and selected database observations as JSON.
+
+A failed quote must return HTTP 503 with `UPSTREAM_UNAVAILABLE`, record `quote_requested` and `quote_failed` in the enabled local funnel, and leave the funding database without a quote or order for that attempt. The response header, error body and Sentry API event share a request ID. A quote failure occurs before an order exists; it is not a failed deposit.
+
+For an existing synthetic order, an unavailable tracking upstream must preserve `bridging` and the source transaction, record `trackingCheck.result=unavailable` and the attempted time, preserve the last successful check time, and schedule another read. The operational report must show `queryUnavailable=true`. After the upstream recovers, a successful read clears the query-unavailable flag and retry count; it does not establish destination credit.
+
+Correlation currently has limits: the funnel attempt does not store the HTTP request ID, and background Sentry events contain the route but no order identifier. They cannot be automatically joined one-to-one across those stores. Sentry also deduplicates matching errors within 10 seconds and caps reporting at 20 events per minute. Use the financial records for per-order state; Sentry is not an exhaustive transaction ledger.
+
 ## Funnel and PostHog
 
 `FUNNEL_ENABLED=true` enables a separate local `funnel.sqlite` collector for all valid anonymous sessions, without requiring a campaign URL. `POSTHOG_ENABLED=false` keeps events local. To export, additionally set `POSTHOG_ENABLED=true`, a `POSTHOG_PROJECT_KEY`, and the project's ingestion region (`https://us.i.posthog.com` or `https://eu.i.posthog.com`). Keys stay on the server.

@@ -1,5 +1,13 @@
 # 验收记录
 
+## 2026-10-22：隔离故障注入与恢复
+
+新增一项集成演练，覆盖报价上游和已建单查询上游的断连及恢复。先成功请求同一loopback上游，再关闭其监听，经真实HTTP处理器、`fetchJson`、SQLite与Sentry NodeClient验证：报价返回503/`UPSTREAM_UNAVAILABLE`，响应和SDK事件的`requestId`一致；漏斗持久化`quote_requested`/`quote_failed`，该失败尝试未产生报价或资金订单。恢复上游后报价返回201。
+
+合成订单查询失败时保留`bridging`和源交易，持久化`trackingCheck.unavailable`、尝试时间及原成功检查时间，增加失败计数并安排重试；运营报告`queryUnavailableOrders=1`。恢复查询后结果为`ok`、失败计数及不可用计数归零，订单仍未完成。所有交易/核验结果均为测试夹具，未签名、广播或查询真实链。
+
+新增定向演练和TypeScript检查通过；本轮只增加测试及说明，未重跑此前763项全量测试或部署。SDK通过自定义transport向本地HTTP接收器发送两个JSON envelope；没有Sentry项目配置，**真实SaaS收件、生产transport与告警仍未验收**。漏斗未存`requestId`、后台错误无订单关联编号的限制见[监控说明](OBSERVABILITY.md)。
+
 ## 2026-10-22：监控、完整漏斗与入金运营记录
 
 新增默认关闭的 Sentry 前后端错误监控、匿名完整漏斗与 PostHog 有界持久队列、授权签名/广播声明及服务器观察/目标账本时间、只读逐单 CSV/JSON 和成功率/耗时/卡单报告；另提供 Better Stack 每60秒外部探测配置工具，默认只生成离线计划。见 [监控说明](OBSERVABILITY.md)、[漏斗](FUNNEL.md)、[入金运营记录](ORDER-OPERATIONS.md)。
