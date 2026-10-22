@@ -52,7 +52,7 @@ describe('optional runtime WalletConnect public configuration', () => {
     const response = await fetch(`${env.base}/api/config`);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(await env.service.config());
-    expect(directives(response)['connect-src']).toEqual(["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com']);
+    expect(directives(response)['connect-src']).toEqual(["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com']);
     expect(response.headers.get('content-security-policy')).not.toContain('walletconnect');
   });
 
@@ -77,7 +77,7 @@ describe('optional runtime WalletConnect public configuration', () => {
     const response = await fetch(`${env.base}/api/config`);
     const csp = directives(response);
     expect(csp['connect-src']).toEqual([
-      "'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com',
+      "'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com',
       'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org',
       'https://verify.walletconnect.com', 'https://verify.walletconnect.org',
       ...new Set(REVIEWED_EVM_SOURCES.map(source => new URL(source.publicRpcUrl).origin)),

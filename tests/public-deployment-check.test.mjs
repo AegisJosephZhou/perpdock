@@ -13,11 +13,11 @@ const html = '<!doctype html><html><head><title>Perpex · 存入 Hyperliquid</ti
 const security = {
   'content-type': 'text/html; charset=utf-8', 'strict-transport-security': 'max-age=31536000; includeSubDomains',
   'x-content-type-options': 'nosniff', 'x-frame-options': 'SAMEORIGIN',
-  'content-security-policy': "default-src 'self'; script-src 'self'; connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com; object-src 'none'; frame-ancestors 'none'; script-src-attr 'none'",
+  'content-security-policy': "default-src 'self'; script-src 'self'; connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com https://api.mainnet-beta.solana.com; object-src 'none'; frame-ancestors 'none'; script-src-attr 'none'",
 };
 const wcProjectId = '0123456789abcdef'.repeat(2);
 const wcConnect = 'wss://relay.walletconnect.com wss://relay.walletconnect.org https://verify.walletconnect.com https://verify.walletconnect.org https://ethereum.publicnode.com https://arbitrum-one.publicnode.com https://base.drpc.org https://optimism.publicnode.com https://polygon-bor-rpc.publicnode.com https://bsc-rpc.publicnode.com';
-const wcSecurity = { ...security, 'content-security-policy': security['content-security-policy'].replace('https://tron-rpc.publicnode.com;', `https://tron-rpc.publicnode.com ${wcConnect};`) + '; frame-src https://verify.walletconnect.org' };
+const wcSecurity = { ...security, 'content-security-policy': security['content-security-policy'].replace('https://api.mainnet-beta.solana.com;', `https://api.mainnet-beta.solana.com ${wcConnect};`) + '; frame-src https://verify.walletconnect.org' };
 const config = () => ({ appName: 'Perpex', network: 'mainnet', paused: true, limits: { minAmount: '10', maxAmount: '100' },
   routes: [{ id: 'ethereum-usdt-hypercore', sourceChainId: 1, symbol: 'USDT', decimals: 6, walletType: 'evm', available: true, reason: secret,
     sourceToken: secret, privateMetadata: secret }], privateMetadata: secret });
@@ -322,4 +322,21 @@ test('CLI requires explicit arguments, rejects credential-bearing values, and he
   assert.equal(child.status, 0); assert.match(child.stdout, /GET-only/); assert.equal(child.stderr, '');
   const invalid = spawnSync(process.execPath, ['scripts/verify-public-deployment.mjs'], { encoding: 'utf8' });
   assert.equal(invalid.status, 1); assert.match(invalid.stderr, /ORIGIN_AND_REPORT_REQUIRED/);
+});
+
+
+test('Dock title and Solana route are accepted without broadening the CSP', async () => {
+  const { report } = await inspect(url => {
+    if (url === `${origin}/`) return new Response(html.replace('Perpex ·', 'Dock ·'), { headers: security });
+    if (url === `${origin}/api/config`) return json({ ...config(), routes: [
+      { id: 'solana-usdc-hypercore', sourceChainId: 792703809, symbol: 'USDC', decimals: 6, walletType: 'solana', available: false },
+    ] });
+  });
+  assert.equal(report.status, 'passed');
+  assert.equal(report.routeSnapshot[0].walletType, 'solana');
+  const { report: unreviewed } = await inspect(url => url === `${origin}/` ? new Response(html, { headers: { ...security,
+    'content-security-policy': security['content-security-policy'].replace('https://api.mainnet-beta.solana.com', 'https://unreviewed-rpc.invalid'),
+  } }) : undefined);
+  assert.equal(unreviewed.status, 'failed');
+  assert.ok(unreviewed.checks.some(check => check.code === 'UNREVIEWED_CSP'));
 });

@@ -111,12 +111,13 @@ export class Store {
     try {
       const previous = this.getOrder(order.id)?.order;
       if (!previous) throw new AppError('ORDER_NOT_FOUND', '未找到订单。', 404);
-      const chainIdentity = order.quote.transaction.kind === 'tron' ? 'tron:mainnet' : `evm:${order.quote.transaction.chainId}`;
+      const chainIdentity = order.quote.transaction.kind === 'evm' ? `evm:${order.quote.transaction.chainId}` : `${order.quote.transaction.kind}:mainnet`;
       // A not-yet-visible hash is a claim, not ownership of a transfer. Reserving
       // it before final verification would let an unrelated pending order block
       // the real payer while the chain API is still catching up.
       const sourceVerified = order.events.some(event => ['bridging', 'verifying_credit', 'completed'].includes(event.status));
-      const sourceKey = order.sourceTxHash && sourceVerified ? `${chainIdentity}:${order.sourceTxHash.toLowerCase()}` : null;
+      const canonicalHash = order.quote.transaction.kind === 'solana' ? order.sourceTxHash : order.sourceTxHash?.toLowerCase();
+      const sourceKey = canonicalHash && sourceVerified ? `${chainIdentity}:${canonicalHash}` : null;
       if (sourceKey) {
         const assigned = this.db.prepare('SELECT id FROM orders WHERE source_hash = ? AND id != ?').get(sourceKey, order.id);
         if (assigned) throw new AppError('TRANSACTION_ALREADY_ASSIGNED', '该来源交易已关联其他订单。', 409);

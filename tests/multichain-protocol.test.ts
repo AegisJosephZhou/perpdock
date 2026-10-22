@@ -153,10 +153,13 @@ function healthFetch(override?: (source: ReviewedEvmSource, body: RpcRequest, re
 }
 
 describe('live-RPC gate without production bypasses', () => {
-  it('returns nine reviewed routes and coalesces network/token health reads for 60 seconds', async () => {
+  it('keeps the nine prior routes available, gates missing Solana metadata, and coalesces health reads', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(now);
     vi.resetModules(); const calls = healthFetch(); const adapter = await import('../server/providers/relay.js');
-    const routes = await adapter.getRoutes(); expect(routes).toHaveLength(9); expect(routes.every(r => r.available)).toBe(true);
+    const routes = await adapter.getRoutes(); expect(routes).toHaveLength(10);
+    const priorRoutes = routes.filter(r => r.walletType !== 'solana');
+    expect(priorRoutes).toHaveLength(9); expect(priorRoutes.every(r => r.available)).toBe(true);
+    expect(routes.find(r => r.id === 'solana-usdc-hypercore')).toMatchObject({ walletType: 'solana', available: false });
     expect(calls.filter(c => c.body.method === 'eth_chainId')).toHaveLength(6);
     expect(calls.filter(c => c.body.method === 'eth_call')).toHaveLength(8);
     const count = calls.length; await adapter.getRoutes(); expect(calls).toHaveLength(count);
@@ -173,7 +176,7 @@ describe('live-RPC gate without production bypasses', () => {
       return result;
     });
     const adapter = await import('../server/providers/relay.js'); const routes = await adapter.getRoutes();
-    expect(routes.filter(r => !r.available).map(r => r.id)).toEqual(['bsc-usdt-hypercore']);
+    expect(routes.filter(r => r.walletType !== 'solana' && !r.available).map(r => r.id)).toEqual(['bsc-usdt-hypercore']);
     await expect(adapter.getQuote(input('bsc-usdt-hypercore'))).rejects.toThrow();
     expect(vi.mocked(fetch).mock.calls.some(c => String(c[0]).endsWith('/quote/v2'))).toBe(false);
   });
@@ -202,7 +205,7 @@ describe('live-RPC gate without production bypasses', () => {
         return result;
       });
       const adapter = await import('../server/providers/relay.js');
-      expect((await adapter.getRoutes()).filter(r => !r.available).map(r => r.id)).toEqual(['ethereum-usdc-hypercore']);
+      expect((await adapter.getRoutes()).filter(r => r.walletType !== 'solana' && !r.available).map(r => r.id)).toEqual(['ethereum-usdc-hypercore']);
     }
   });
   it('retries failed health after its short cache, and never silently falls back to latest', async () => {

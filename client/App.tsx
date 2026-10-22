@@ -17,11 +17,14 @@ import optimismLogo from './assets/brand/optimism.svg';
 import polygonLogo from './assets/brand/polygon.svg';
 import bnbLogo from './assets/brand/bnb.svg';
 import tronLogo from './assets/brand/tron.svg';
+import solanaLogo from './assets/brand/solana.svg';
+import { solanaSignature } from '../shared/solana.js';
+import { connectSolana, currentSolanaAddress, disconnectSolana, listSolanaWallets, selectedSolanaWalletName, solanaProvider, verifySolanaWallet } from './solana-wallet.js';
 import { approveExact, connectEvm, connectTron, disconnectEvm, evmProvider, getAllowance, getEvmChain, listEvmWallets, preflightPayment, sendPayment, sourceBalance, sourceNativeBalance, switchEvmChain, validateQuoteContext, walletAddressEquals } from './wallets.js';
 
 const networkLogos: Record<number, string> = {
   1: ethereumLogo, 42161: arbitrumLogo, 8453: baseLogo, 10: optimismLogo,
-  137: polygonLogo, 56: bnbLogo,
+  137: polygonLogo, 56: bnbLogo, 792703809: solanaLogo,
 };
 
 const labels: Record<OrderStatus, string> = { awaiting_signature: '等待钱包签名', source_pending: '确认源链付款', bridging: '兑换与跨链处理中', verifying_credit: '核验合约账户入账', completed: '已核实到账', attention: '需要进一步核查', expired: '报价已过期' };
@@ -32,6 +35,7 @@ function SymbolIcon({ kind = 'arrow' }: { kind?: 'arrow' | 'wallet' | 'shield' |
 }
 function explorer(route: Route | undefined, hash: string): string | undefined {
   if (!route) return;
+  if (route.walletType === 'solana') { try { return `https://solscan.io/tx/${solanaSignature(hash)}`; } catch { return; } }
   if (route.walletType === 'tron' && /^[a-f\d]{64}$/i.test(hash)) return `https://tronscan.org/#/transaction/${hash}`;
   const domains: Record<number, string> = { 1: 'etherscan.io', 42161: 'arbiscan.io', 8453: 'basescan.org', 10: 'optimistic.etherscan.io', 56: 'bscscan.com', 137: 'polygonscan.com' };
   return /^0x[a-f\d]{64}$/i.test(hash) && domains[route.sourceChainId] ? `https://${domains[route.sourceChainId]}/tx/${hash}` : undefined;
@@ -60,6 +64,10 @@ export default function App() {
   const [differentConfirmed, setDifferentConfirmed] = useState(false);
   const [evmAddress, setEvmAddress] = useState('');
   const [tronAddress, setTronAddress] = useState('');
+  const [solanaAddress, setSolanaAddress] = useState('');
+  const [solanaWalletOptions, setSolanaWalletOptions] = useState<{ id: string; name: string }[]>([]);
+  const [solanaWalletId, setSolanaWalletId] = useState('');
+  const [solanaWalletName, setSolanaWalletName] = useState('');
   const [chainId, setChainId] = useState<number>();
   const [balance, setBalance] = useState<string>();
   const [balanceError, setBalanceError] = useState('');
@@ -104,13 +112,13 @@ export default function App() {
   const verifiedOrders = useRef(new Map<string, Order>());
   const orderReads = useRef(new Map<string, Promise<Order>>());
   const route = config?.routes.find((entry) => entry.id === (order?.quote.routeId || routeId));
-  const source = route?.walletType === 'tron' ? tronAddress : evmAddress;
+  const source = route?.walletType === 'tron' ? tronAddress : route?.walletType === 'solana' ? solanaAddress : evmAddress;
   const networkLogo = route?.walletType === 'tron' ? tronLogo : route ? networkLogos[route.sourceChainId] : undefined;
   const walletConnectChosen = walletId === 'walletconnect';
   const walletConnectUnavailable = walletConnectChosen && !config?.walletConnect?.projectId;
   const sourceNetwork = route?.walletType === 'evm' && route.sourceChainId === 1 ? 'Ethereum 主网' : route?.sourceChain || '付款网络';
   const networkReady = route?.walletType !== 'evm' || chainId === route.sourceChainId;
-  const gasSymbol = route?.gasSymbol || (route?.walletType === 'tron' ? 'TRX' : 'ETH');
+  const gasSymbol = route?.gasSymbol || (route?.walletType === 'tron' ? 'TRX' : route?.walletType === 'solana' ? 'SOL' : 'ETH');
   const nativeZero = nativeBalance !== undefined && /^0(?:\.0+)?$/.test(nativeBalance);
   const intentBlocked = auditing || pendingPayments.length > 0 || !!recoveryProblem || !online;
   const networks = config?.routes.filter((item, index, routes) => routes.findIndex((other) => other.sourceChainId === item.sourceChainId && other.walletType === item.walletType) === index) || [];
@@ -141,7 +149,7 @@ export default function App() {
   useEffect(() => { void reloadConfig(); const id = setInterval(() => void reloadConfig(), 60_000); return () => clearInterval(id); }, [reloadConfig]);
   useEffect(() => { const id = setInterval(() => setClock(Date.now()), 1_000); return () => clearInterval(id); }, []);
   useEffect(() => {
-    const discover = () => { try { setWalletOptions(listEvmWallets()); } catch { setWalletOptions([]); } };
+    const discover = () => { try { setWalletOptions(listEvmWallets()); } catch { setWalletOptions([]); } setSolanaWalletOptions(listSolanaWallets()); };
     const connectivity = () => { setOnline(navigator.onLine); if (navigator.onLine) { void reloadConfig(); setBalanceTick((n) => n + 1); setOrderReadTick((n) => n + 1); setRecoveryTick((n) => n + 1); } };
     discover(); const id = setInterval(discover, 2_000);
     window.addEventListener('online', connectivity); window.addEventListener('offline', connectivity);
@@ -175,6 +183,18 @@ export default function App() {
     return () => { provider.removeListener?.('accountsChanged', changed); provider.removeListener?.('chainChanged', network); provider.removeListener?.('disconnect', disconnect); };
   }, [connectedTick, evmAddress]);
   useEffect(() => {
+    if (!solanaAddress) return;
+    let provider;
+    try { provider = solanaProvider(); } catch { return; }
+    const changed = () => {
+      quoteRequest.current++; setSolanaAddress(currentSolanaAddress());
+      setQuote(undefined); setAllowance(undefined); setRecipientConfirmed(false); setDifferentConfirmed(false); setConnectedTick(n => n + 1);
+    };
+    const disconnected = () => { changed(); setSolanaAddress(''); setSolanaWalletName(''); };
+    provider.on?.('accountChanged', changed); provider.on?.('disconnect', disconnected);
+    return () => { provider.removeListener?.('accountChanged', changed); provider.removeListener?.('disconnect', disconnected); };
+  }, [solanaAddress, connectedTick]);
+  useEffect(() => {
     const handler = (event: MessageEvent) => {
       if (event.source !== window || !event.data || typeof event.data !== 'object') return;
       const action = event.data.message?.action;
@@ -205,7 +225,7 @@ export default function App() {
   }, [route, source, chainId, networkReady, balanceTick, connectedTick]);
   useEffect(() => {
     let active = true; setNativeBalance(undefined); setNativeError('');
-    if (!route || route.walletType !== 'evm' || !source || !networkReady) return;
+    if (!route || route.walletType === 'tron' || !source || !networkReady) return;
     void sourceNativeBalance(route, source).then((value) => { if (active) setNativeBalance(value); }).catch((err) => { if (active) setNativeError(errorMessage(err)); });
     return () => { active = false; };
   }, [route, source, chainId, networkReady, balanceTick, connectedTick]);
@@ -313,7 +333,13 @@ export default function App() {
     setWalletId(nextId); setEvmAddress(''); setEvmWalletName(''); setChainId(undefined); setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
     setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
   }
+  function chooseSolanaWallet(nextId: string) {
+    if (actionInFlight.current || paymentAttempted) return;
+    setSolanaWalletId(nextId); setSolanaAddress(''); setSolanaWalletName(''); setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
+    setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
+  }
   async function checkSourceNetwork() {
+    if (route?.walletType === 'solana') { verifySolanaWallet(route, source); return; }
     if (!route || route.walletType !== 'evm') return;
     const currentChain = await getEvmChain(); setChainId(currentChain);
     if (currentChain !== route.sourceChainId) {
@@ -358,6 +384,7 @@ export default function App() {
     if (!route) return;
     await operation('connect', async () => {
       if (route.walletType === 'tron') setTronAddress(await connectTron());
+      else if (route.walletType === 'solana') { setSolanaAddress(await connectSolana(solanaWalletId || undefined)); setSolanaWalletName(selectedSolanaWalletName() || ''); }
       else {
         const address = await connectSelectedEvm();
         if (!order) setRecipient((current) => current.trim() ? current : address);
@@ -371,7 +398,8 @@ export default function App() {
       evmConnectionVersion.current++; setEvmAddress(''); setEvmWalletName(''); setChainId(undefined);
       setBalance(undefined); setNativeBalance(undefined); setAllowance(undefined);
       setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote();
-      await disconnectEvm();
+      if (route?.walletType === 'solana') { setSolanaAddress(''); setSolanaWalletName(''); await disconnectSolana(); }
+      else await disconnectEvm();
     });
   }
   async function requestQuote() {
@@ -432,7 +460,8 @@ export default function App() {
     if (!credential) return;
     await operation('report', async () => {
       const value = hash.trim();
-      if (!/^(?:0x)?[a-f\d]{64}$/i.test(value)) throw new Error('请输入完整的源链交易编号。');
+      if (route?.walletType === 'solana') { try { solanaSignature(value); } catch { throw new Error('请输入完整的 Solana 交易签名。'); } }
+      else if (!/^(?:0x)?[a-f\d]{64}$/i.test(value)) throw new Error('请输入完整的源链交易编号。');
       const next = await api.report(credential.id, credential.accessToken, value);
       remember({ ...credential, submission: { state: 'submitted', txHash: value } }); setOrder(next); setReceiptHash(''); setNotice('交易凭证已上报，后台将独立核验。');
     });
@@ -518,8 +547,8 @@ export default function App() {
       <div className="page-heading"><div className="eyebrow">{historyOpen ? 'YOUR ORDERS' : progressPage ? 'FUNDING STATUS' : 'YOUR WALLET → HYPERLIQUID'}</div><h1>{historyOpen ? t('此浏览器的订单记录') : progressPage ? t('入金进度') : t('存入 Hyperliquid')}</h1><p>{historyOpen ? t('选择一笔订单，继续查看或核验付款。') : progressPage ? t('追踪这笔资金，直到默认 Perps 账户入账。') : t('由你的钱包签名，进入自己的默认 Perps 账户。')}</p></div>
       <details className="funding-help"><summary>{t("入金帮助：交易所、手机与到账问题")}</summary><div className="help-content">
         <details><summary>{t("资产在交易所")}</summary><p>{t("交易所提现不能完成本应用的授权与入金调用。请先提到自己控制的钱包，核对本页支持的网络和资产，钱包到账后再连接。不要直接向代币或路由合约转账；这里不提供平台充值地址。")}</p></details>
-        <details><summary>{t("用手机或找不到钱包")}</summary><p>{t("EVM 网络可使用浏览器钱包，或选择 WalletConnect，用手机钱包扫描电脑上的连接二维码。扫码需要管理员启用；Tron 付款继续使用 TronLink。页面仍需安全访问、持久存储和 Web Locks；具体手机钱包的签名兼容性需实测。")}</p>{publicSite ? <button className="text-button" disabled={!!busy} onClick={() => void operation('copy', async () => { if (!navigator.clipboard) throw new Error('此浏览器不能复制，请手动复制地址栏的 HTTPS 网址。'); await navigator.clipboard.writeText(publicSite); setNotice('已复制当前 HTTPS 网址，不含订单查询凭据。'); })}>{t("复制当前 HTTPS 网址")}</button> : <p>{t("当前为本地或非公开 HTTPS 地址。WalletConnect 启用后，手机可扫描电脑上的配对二维码；要在手机直接打开此页面，需使用可访问的 HTTPS 网址。")}</p>}<p>{t("若钱包锁定，请先解锁；拒绝连接后可重新连接。页面不会要求助记词或私钥。")}</p></details>
-        <details><summary>{t("找不到资产、网络或 HL 账户")}</summary><p>{t("可用范围以当前网络与资产列表为准。USDT0、Binance-Peg USDT 与普通 USDT 要按所在链和合约区分；不接受 USDC.e、Solana、法币或直接用 ETH/BNB/POL 入金，原生币仅支付手续费。")}</p><p>{t("接收目标仅为自己的 Hyperliquid 默认 Perps USDC 账户，不是 Spot 或 HyperEVM 钱包余额。新账户和零余额以本次真实报价的费用与限制为准；地址格式正确不证明你能控制账户，请勿填交易所收款地址。")}</p></details>
+        <details><summary>{t("用手机或找不到钱包")}</summary><p>{t("EVM 网络可使用浏览器钱包或 WalletConnect；Tron 使用 TronLink；Solana 使用 Phantom 或 Solflare 浏览器扩展。WalletConnect 扫码需要管理员启用，暂不支持 Solana。页面仍需安全访问、持久存储和 Web Locks；手机钱包与硬件钱包需另行实测。")}</p>{publicSite ? <button className="text-button" disabled={!!busy} onClick={() => void operation('copy', async () => { if (!navigator.clipboard) throw new Error('此浏览器不能复制，请手动复制地址栏的 HTTPS 网址。'); await navigator.clipboard.writeText(publicSite); setNotice('已复制当前 HTTPS 网址，不含订单查询凭据。'); })}>{t("复制当前 HTTPS 网址")}</button> : <p>{t("当前为本地或非公开 HTTPS 地址。WalletConnect 启用后，手机可扫描电脑上的配对二维码；要在手机直接打开此页面，需使用可访问的 HTTPS 网址。")}</p>}<p>{t("若钱包锁定，请先解锁；拒绝连接后可重新连接。页面不会要求助记词或私钥。")}</p></details>
+        <details><summary>{t("找不到资产、网络或 HL 账户")}</summary><p>{t("可用范围以当前网络与资产列表为准。USDT0、Binance-Peg USDT 与普通 USDT 要按所在链和合约区分；Solana 仅支持原生 USDC。不接受 USDC.e、法币或直接用 ETH/BNB/POL/SOL 入金，原生币仅支付手续费。")}</p><p>{t("接收目标仅为自己的 Hyperliquid 默认 Perps USDC 账户，不是 Spot 或 HyperEVM 钱包余额。新账户和零余额以本次真实报价的费用与限制为准；地址格式正确不证明你能控制账户，请勿填交易所收款地址。")}</p></details>
         <details><summary>{t("已经付款但还未显示到账")}</summary><p>{t("先从订单记录恢复原单、核对钱包中的原交易。最终确认及本单入账证据核验可能较晚，HL 可能先到账；签名窗口到期不代表已广播交易失败。不要另建订单重付。订单凭据保存在此浏览器，换设备或清除数据后不能保证自动恢复，下载收据也不代替访问凭据。")}</p><button className="text-button" disabled={!!busy || !online} onClick={() => void operation('reconnect', async () => { await reloadConfig(); setBalanceTick((n) => n + 1); setOrderReadTick((n) => n + 1); setRecoveryTick((n) => n + 1); })}>{t("刷新连接与只读核验")}</button></details>
         <p className="support-link"><a href="https://x.com/PerpExchange" target="_blank" rel="noreferrer noopener">{locale === 'en' ? 'Funding questions · Perpex on X ↗' : '入金问题 · Perpex X 公开账号 ↗'}</a><br/>{locale === 'en' ? 'This is a public channel. Do not post addresses, balances, order access tokens, private keys or seed phrases.' : '这是公开渠道，请勿发布地址、余额、订单访问令牌、私钥或助记词。'}</p>
       </div></details>
@@ -558,18 +587,19 @@ export default function App() {
             {route && <details className="asset-identity"><summary>{t("代币合约与资产说明")}</summary><p>{t(route.assetNote) || t(`${route.sourceChain} 上的 ${route.symbol}，精度 ${route.decimals} 位。`)}</p><code>{route.sourceToken}</code><p>{t("此地址用于核对代币，请勿直接转账至合约。")}</p></details>}
             <label className="sr-only" htmlFor="amount">{t("支付金额")}</label><div className="amount-input"><input id="amount" inputMode="decimal" autoComplete="off" value={amount} placeholder="0.00" disabled={!!order || !!busy} onChange={(event) => { setAmount(event.target.value); invalidateQuote(); }}/><span>{route?.symbol || '—'}</span></div>
             <div className="amount-shortcuts" aria-label={t("快捷支付金额")}>{[25, 50, 100].map((percent) => <button key={percent} disabled={balance === undefined || !route || !config || !!order || !!busy} onClick={() => chooseAmount(percent)}>{percent === 100 ? t('全部') : `${percent}%`}</button>)}</div>
-            <div className="wallet-row"><div><span className="field-label">{t("付款钱包")}{source && route?.walletType === 'evm' && evmWalletName ? ` · ${t(evmWalletName)}` : ''}</span>{source ? <p className="mono full-address">{source}</p> : <p>{t("连接 ")}{route?.walletType === 'tron' ? 'TronLink' : walletConnectChosen ? t('WalletConnect 手机钱包') : 'MetaMask / Rabby'}</p>}</div><button className="secondary small" disabled={!!busy || !route || (route.walletType === 'evm' && walletConnectUnavailable)} onClick={() => void connectSource()}>{busy === 'connect' ? t('连接中…') : source ? t('重新连接') : route?.walletType === 'evm' && walletConnectChosen ? t('扫码连接') : t('连接钱包')}</button></div>
+            <div className="wallet-row"><div><span className="field-label">{t("付款钱包")}{source && route?.walletType === 'evm' && evmWalletName ? ` · ${t(evmWalletName)}` : source && route?.walletType === 'solana' && solanaWalletName ? ` · ${solanaWalletName}` : ''}</span>{source ? <p className="mono full-address">{source}</p> : <p>{t("连接 ")}{route?.walletType === 'tron' ? 'TronLink' : route?.walletType === 'solana' ? 'Phantom / Solflare' : walletConnectChosen ? t('WalletConnect 手机钱包') : 'MetaMask / Rabby'}</p>}</div><button className="secondary small" disabled={!!busy || !route || (route.walletType === 'evm' && walletConnectUnavailable)} onClick={() => void connectSource()}>{busy === 'connect' ? t('连接中…') : source ? t('重新连接') : route?.walletType === 'evm' && walletConnectChosen ? t('扫码连接') : t('连接钱包')}</button></div>
             {route?.walletType === 'evm' && <><div className="wallet-choice"><label htmlFor="evm-wallet">{t("连接方式")}</label><select id="evm-wallet" value={walletId} disabled={!!busy || paymentAttempted} onChange={(event) => chooseWallet(event.target.value)}><option value="">{walletOptions.length ? t('浏览器钱包（MetaMask 优先）') : t('浏览器钱包 · 未检测到')}</option>{walletOptions.map((wallet) => <option key={wallet.id} value={wallet.id}>{wallet.name}</option>)}<option value="walletconnect">{t("WalletConnect · 扫码连接")}</option></select></div>
               {walletConnectChosen && <p className={walletConnectUnavailable ? 'field-warning' : 'field-help'} role="status">{walletConnectUnavailable ? t('WalletConnect 尚未启用，等待管理员配置。你仍可选择浏览器钱包连接。') : t('用支持 WalletConnect 的手机钱包扫描电脑上的二维码，并在手机确认连接。')}</p>}
               {source && <button className="text-button disconnect-wallet" disabled={!!busy || paymentAttempted} onClick={() => void disconnectSource()}>{t("断开钱包连接")}</button>}
             </>}
+            {route?.walletType === 'solana' && <><div className="wallet-choice"><label htmlFor="solana-wallet">{t("Solana 钱包")}</label><select id="solana-wallet" value={solanaWalletId} disabled={!!busy || paymentAttempted} onChange={event => chooseSolanaWallet(event.target.value)}><option value="">{solanaWalletOptions.length ? t('选择已安装钱包（Phantom 优先）') : t('未检测到 Phantom / Solflare')}</option>{solanaWalletOptions.map(wallet => <option key={wallet.id} value={wallet.id}>{wallet.name}</option>)}</select></div><p className="field-help">{t("Solana 仅支持原生 USDC，使用 Phantom 或 Solflare 浏览器扩展；需要 SOL 支付交易及账户创建费用，无单独代币授权。")}</p>{source && <button className="text-button disconnect-wallet" disabled={!!busy} onClick={() => void disconnectSource()}>{t("断开钱包连接")}</button>}</>}
             {route?.walletType === 'tron' && <p className="field-help">{t("Tron 付款使用 TronLink；WalletConnect 扫码目前仅支持 EVM 网络。")}</p>}
             {source && route?.walletType === 'evm' && !networkReady && <button className="network-switch" disabled={!!busy} onClick={() => void operation('switch', async () => { invalidateQuote(); setRecipientConfirmed(false); setDifferentConfirmed(false); setAllowance(undefined); await switchEvmChain(route.sourceChainId); setChainId(await getEvmChain()); setConnectedTick((n) => n + 1); })}>{t("切换钱包至 ")}{t(sourceNetwork)} ↗</button>}
             {order && source && !correctWallet && <p className="field-warning">{t("请连接本订单付款账户：")}<span className="mono">{order.quote.sourceAddress}</span></p>}
             {balanceError && <p className="field-warning">{t("余额暂未读取：")}{t(balanceError)}</p>}
-            {config && <p className="field-help">{t("单笔 ")}{config.limits.minAmount}–{config.limits.maxAmount} {route?.symbol || ''}{locale === 'en' ? '. ' : '。'}{route?.walletType === 'tron' ? t('另需 TRX 支付链上资源费用。') : t(`另需 ${gasSymbol} 支付 ${t(sourceNetwork)}授权与付款手续费。`)}</p>}
+            {config && <p className="field-help">{t("单笔 ")}{config.limits.minAmount}–{config.limits.maxAmount} {route?.symbol || ''}{locale === 'en' ? '. ' : '。'}{route?.walletType === 'tron' ? t('另需 TRX 支付链上资源费用。') : route?.walletType === 'solana' ? t('另需 SOL 支付交易及账户创建费用。') : t(`另需 ${gasSymbol} 支付 ${t(sourceNetwork)}授权与付款手续费。`)}</p>}
             {route?.walletType === 'evm' && source && networkReady && <GaslessReadiness key={`${route.id}:${source}:${connectedTick}`} route={route} source={source} disabled={!!busy || !online || paymentAttempted}/>}
-            {route?.walletType === 'evm' && source && <div className="native-balance" aria-label={t("网络手续费余额")}><span>{t("手续费余额")}</span><strong className="mono">{nativeBalance !== undefined ? `${nativeBalance} ${gasSymbol}` : nativeError ? t('暂无法读取') : t('读取中…')}</strong>{nativeZero ? <p className="field-warning">{t("当前没有 ")}{gasSymbol} {t("支付链费。请向自己的付款钱包补充后刷新；暂不能授权或付款。")}</p> : <p className="field-help">{t(nativeError) || t('非零余额不代表足够支付全部操作，签名前还会按本笔交易检查费用。')}</p>}</div>}
+            {(route?.walletType === 'evm' || route?.walletType === 'solana') && source && <div className="native-balance" aria-label={t("网络手续费余额")}><span>{t("手续费余额")}</span><strong className="mono">{nativeBalance !== undefined ? `${nativeBalance} ${gasSymbol}` : nativeError ? t('暂无法读取') : t('读取中…')}</strong>{nativeZero ? <p className="field-warning">{t("当前没有 ")}{gasSymbol} {t("支付链费。请向自己的付款钱包补充后刷新；暂不能授权或付款。")}</p> : <p className="field-help">{t(nativeError) || t('非零余额不代表足够支付全部操作，签名前还会按本笔交易检查费用。')}</p>}</div>}
             {route && !route.available && <p className="field-warning">{t(route.reason) || t('此路线暂不可用。')}</p>}
             {config && !config.routes.some((item) => item.available) && <p className="field-warning">{t("当前没有可接受资金的路线，请稍后重试。")}</p>}
           </section>
@@ -578,7 +608,7 @@ export default function App() {
             <div className="card-topline"><span>{t("到")}</span><span className="destination-network">{t("默认 Perps 账户")}</span></div>
             <div className="destination-title"><span className="hype-mark" aria-hidden="true"><img src={hyperliquidLogo} width="38" height="38" alt=""/></span><div><h2>Hyperliquid</h2><p>{t("USDC · 永续合约保证金")}</p></div></div>
             <div className="receive-label">{t("预计到账")}</div><div className="receive-amount mono">{shownQuote?.expectedReceive || '—'}<span>USDC</span></div><p className="minimum-receive">{shownQuote ? t(`最低到账 ${shownQuote.minReceive} USDC`) : t('获取实时报价后显示净到账金额')}</p>
-            <div className="recipient-section"><div className="label-line"><label htmlFor="recipient">{t("你的 HL 接收地址")}</label><button className="text-button" disabled={!!order || !!busy || (!evmAddress && walletConnectUnavailable)} onClick={() => void operation('recipient', async () => { const address = evmAddress || await connectSelectedEvm(); setRecipient(address); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); setConnectedTick((n) => n + 1); })}>{evmAddress ? t('填入已连接地址 ↗') : walletConnectChosen ? t('扫码连接 EVM 钱包填入 ↗') : t('连接 EVM 钱包填入 ↗')}</button></div><input className="recipient-input mono" id="recipient" value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" disabled={!!order || !!busy} onChange={(event) => { setRecipient(event.target.value.trim()); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); }}/>{recipient && <p className="full-address mono address-preview">{recipient}</p>}{recipient && !isAddress(recipient) && <p className="field-warning">{t("请输入完整、有效的 EVM 地址（0x 开头）。")}</p>}<p className="field-help">{route?.walletType === 'tron' ? t('Tron 付款地址与 HL 接收地址需要分别确认。') : t('可使用付款钱包的同一 0x 地址，或填写自己控制的其他 HL 接收地址；仍需核对确认。')}</p><label className="check-row"><input type="checkbox" checked={recipientConfirmed} disabled={!isAddress(recipient) || !!busy} onChange={(event) => { setRecipientConfirmed(event.target.checked); if (!order) setQuote(undefined); }}/><span>{t("我已核对并控制上述 HL 接收地址，确认存入其默认 Perps 账户。")}</span></label>{differs && <label className="check-row warning-check"><input type="checkbox" checked={differentConfirmed} disabled={!!busy} onChange={(event) => setDifferentConfirmed(event.target.checked)}/><span>{t("付款与接收地址不同，我确认这是有意指定的接收账户。")}</span></label>}</div>
+            <div className="recipient-section"><div className="label-line"><label htmlFor="recipient">{t("你的 HL 接收地址")}</label><button className="text-button" disabled={!!order || !!busy || (!evmAddress && walletConnectUnavailable)} onClick={() => void operation('recipient', async () => { const address = evmAddress || await connectSelectedEvm(); setRecipient(address); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); setConnectedTick((n) => n + 1); })}>{evmAddress ? t('填入已连接地址 ↗') : walletConnectChosen ? t('扫码连接 EVM 钱包填入 ↗') : t('连接 EVM 钱包填入 ↗')}</button></div><input className="recipient-input mono" id="recipient" value={recipient} spellCheck={false} autoComplete="off" placeholder="0x…" disabled={!!order || !!busy} onChange={(event) => { setRecipient(event.target.value.trim()); setRecipientConfirmed(false); setDifferentConfirmed(false); invalidateQuote(); }}/>{recipient && <p className="full-address mono address-preview">{recipient}</p>}{recipient && !isAddress(recipient) && <p className="field-warning">{t("请输入完整、有效的 EVM 地址（0x 开头）。")}</p>}<p className="field-help">{route?.walletType === 'tron' ? t('Tron 付款地址与 HL 接收地址需要分别确认。') : route?.walletType === 'solana' ? t('Solana 付款地址与 HL 的 0x 接收地址不同，必须分别核对；不要填写 Solana 地址作为 HL 接收地址。') : t('可使用付款钱包的同一 0x 地址，或填写自己控制的其他 HL 接收地址；仍需核对确认。')}</p><label className="check-row"><input type="checkbox" checked={recipientConfirmed} disabled={!isAddress(recipient) || !!busy} onChange={(event) => { setRecipientConfirmed(event.target.checked); if (!order) setQuote(undefined); }}/><span>{t("我已核对并控制上述 HL 接收地址，确认存入其默认 Perps 账户。")}</span></label>{differs && <label className="check-row warning-check"><input type="checkbox" checked={differentConfirmed} disabled={!!busy} onChange={(event) => setDifferentConfirmed(event.target.checked)}/><span>{t("付款与接收地址不同，我确认这是有意指定的接收账户。")}</span></label>}</div>
           </section>
         </div>
         <section className="card route-card" aria-label={t("报价费用")}><div className="route-summary"><span>{t("入金路线")}</span><strong>{route ? `${t(sourceNetwork)} ${route.symbol}` : t('付款钱包')} <span aria-hidden="true">→</span> {t("HL 默认 Perps")}</strong></div>
@@ -590,10 +620,11 @@ export default function App() {
           {order ? <>
             <div className="order-intent"><span>{t("已创建订单 ")}<span className="mono">{brief(order.id)}</span></span><button className="text-button" onClick={downloadReceipt}>{t("下载凭证 ↓")}</button></div>
             {route?.walletType === 'tron' && <p className="resource-note">{t("授权与付款分别计费。每次合约操作的能量费用上限为 150 TRX；带宽及实际费用以钱包为准。旧额度不足时可能还需先归零。")}</p>}
+            {route?.walletType === 'solana' && <p className="resource-note">{t("Solana 付款没有单独授权步骤。签名后先保存交易编号再广播；若结果未知，请核验原订单，不要重新付款。")}</p>}
             {route?.walletType === 'evm' && <p className="resource-note">{t(sourceNetwork)}{t("授权与付款分别消耗 ")}{gasSymbol} {t("手续费。旧额度不足时，可能需要先清零再授权本笔精确额度；以钱包确认内容为准。")}</p>}
-            {expired || order.status === 'expired' ? <><div className="message warning"><strong>{t("签名窗口已过期")}</strong><p>{t("本页没有已记录的付款。点击下方按钮会返回报价准备步骤；请重新连接付款钱包（如已断开）、核对并勾选接收地址，再获取新报价。已完成的代币授权不会自动撤销。若曾在钱包确认付款，请先核对原交易，不要重复付款。")}</p></div><button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>{t("返回并重新报价")}<SymbolIcon/></button></> : !correctWallet ? <button className="primary full" disabled={!!busy || !route} onClick={() => void connectSource()}>{t("连接本订单付款钱包")}<SymbolIcon kind="wallet"/></button> : !allowanceReady ? <><p className="action-explanation">{order.quote.approval ? t(`下一步：在钱包检查并授权本笔 ${order.quote.amount} ${route?.symbol}。授权完成后仍需确认付款。`) : t('下一步：检查当前链上额度，再确认钱包付款。')}</p><button className="primary full" disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void approve()}>{busy === 'approve' ? t('钱包授权处理中…') : order.quote.approval ? t('授权本笔额度') : t('检查本笔额度')}<SymbolIcon/></button></> : <><div className="allowance-ready"><span aria-hidden="true">✓</span>{t("代币额度已就绪，尚未付款")}</div><button className="primary full" disabled={!!busy || !canPay} onClick={() => void pay()}>{busy === 'pay' ? t('请在钱包确认…') : t(`钱包签名并付款 ${order.quote.amount} ${route?.symbol}`)}<SymbolIcon/></button></>}
+            {expired || order.status === 'expired' ? <><div className="message warning"><strong>{t("签名窗口已过期")}</strong><p>{t("本页没有已记录的付款。点击下方按钮会返回报价准备步骤；请重新连接付款钱包（如已断开）、核对并勾选接收地址，再获取新报价。已完成的代币授权不会自动撤销。若曾在钱包确认付款，请先核对原交易，不要重复付款。")}</p></div><button className="primary full" disabled={!!busy || intentBlocked} onClick={startNew}>{t("返回并重新报价")}<SymbolIcon/></button></> : !correctWallet ? <button className="primary full" disabled={!!busy || !route} onClick={() => void connectSource()}>{t("连接本订单付款钱包")}<SymbolIcon kind="wallet"/></button> : !allowanceReady ? <><p className="action-explanation">{order.quote.approval ? t(`下一步：在钱包检查并授权本笔 ${order.quote.amount} ${route?.symbol}。授权完成后仍需确认付款。`) : t('下一步：检查当前链上额度，再确认钱包付款。')}</p><button className="primary full" disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void approve()}>{busy === 'approve' ? t('钱包授权处理中…') : order.quote.approval ? t('授权本笔额度') : t('检查本笔额度')}<SymbolIcon/></button></> : <><div className="allowance-ready"><span aria-hidden="true">✓</span>{route?.walletType === 'solana' ? t('无需代币授权，尚未付款') : t("代币额度已就绪，尚未付款")}</div><button className="primary full" disabled={!!busy || !canPay} onClick={() => void pay()}>{busy === 'pay' ? t('请在钱包确认…') : t(`钱包签名并付款 ${order.quote.amount} ${route?.symbol}`)}<SymbolIcon/></button></>}
             {!expired && <button className="text-button change-order" disabled={!!busy || intentBlocked} onClick={startNew}>{t("重新填写入金")}</button>}
-          </> : quote && !expired ? <><p className="action-explanation">{t("确认上述接收地址、最低到账及费用，下一步创建订单并检查代币额度。")}</p><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void createOrder()}>{busy === 'create' ? t('正在创建订单…') : t('确认报价，创建订单')}<SymbolIcon/></button></> : <><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!mayCreate} onClick={() => void requestQuote()}>{busy === 'quote' ? t('正在获取实时路线…') : quote && expired ? t('报价已过期，重新获取') : t('获取实时入金报价')}<SymbolIcon/></button><p className="action-hint">{t("获取报价不会授权代币，也不会付款。")}</p></>}
+          </> : quote && !expired ? <><p className="action-explanation">{route?.walletType === 'solana' ? t('确认接收地址、最低到账及费用后创建订单；付款前检查 USDC 与 SOL，随后在钱包签名。') : t("确认上述接收地址、最低到账及费用，下一步创建订单并检查代币额度。")}</p><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!!busy || intentBlocked || nativeZero || walletCapabilityMissing || !networkReady || !confirmed || !route?.available || config?.paused} onClick={() => void createOrder()}>{busy === 'create' ? t('正在创建订单…') : t('确认报价，创建订单')}<SymbolIcon/></button></> : <><button className="primary full" aria-describedby={newIntentHint ? "new-intent-hint" : undefined} disabled={!mayCreate} onClick={() => void requestQuote()}>{busy === 'quote' ? t('正在获取实时路线…') : quote && expired ? t('报价已过期，重新获取') : t('获取实时入金报价')}<SymbolIcon/></button><p className="action-hint">{t("获取报价不会授权代币，也不会付款。")}</p></>}
           {newIntentHint && <div id="new-intent-hint" className="message warning" role="status" aria-label={t("入金操作提示")}><strong>{t("下一步")}</strong><p>{t(newIntentHint)}</p></div>}
           {order && !confirmed && !expired && <p className="field-warning">{t("请先核对并确认上方完整的 HL 接收地址。")}</p>}
           {progress && <div className="working" role="status"><span className="spinner"/>{t(progress)}</div>}

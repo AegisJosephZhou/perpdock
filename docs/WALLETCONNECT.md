@@ -1,5 +1,7 @@
 # WalletConnect 扫码连接
 
+2026-10-22：新增的 Solana 原生 USDC 路线使用 Phantom / Solflare 浏览器扩展，未接入 WalletConnect；见 [Solana 说明](SOLANA.md)。下文 WalletConnect 范围继续仅限 EVM。
+
 2026-10-15 更新：新增六个 EVM 主网的 WalletConnect 连接。用户反馈连接测试成功；本次更新尚不构成代币授权、付款或 Hyperliquid 入账验收。
 
 ## 支持范围与操作

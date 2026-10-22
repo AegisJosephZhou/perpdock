@@ -2,6 +2,7 @@ import type { AppConfig, Evidence, Order, OrderStatus, ProviderAdapter, Quote, Q
 import { AppError, decimalUnits, hashSecret, newId, normalizeTxHash, orderToken, verifyToken } from './security.js';
 import { Store } from './store.js';
 import type { AttributionRecorder } from './attribution.js';
+import { solanaPayerAddress, SOLANA_ROUTE, validateSolanaInstructions } from '../shared/solana.js';
 
 export interface ServiceOptions {
   tokenSecret: string; appName?: string; minAmount?: string; maxAmount?: string;
@@ -71,7 +72,11 @@ export class OrderService {
     if (units < decimalUnits(config.limits.minAmount, route.decimals) || units > decimalUnits(config.limits.maxAmount, route.decimals)) {
       throw new AppError('AMOUNT_OUT_OF_RANGE', `入金金额需在 ${config.limits.minAmount} 至 ${config.limits.maxAmount} ${route.symbol} 之间。`);
     }
-    if (route.walletType === 'evm' ? !/^0x[\da-fA-F]{40}$/.test(input.sourceAddress) : !/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(input.sourceAddress)) {
+    let validSource = route.walletType === 'evm' ? /^0x[\da-fA-F]{40}$/.test(input.sourceAddress) : /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(input.sourceAddress);
+    if (route.walletType === 'solana') {
+      try { validSource = solanaPayerAddress(input.sourceAddress) === input.sourceAddress; } catch { validSource = false; }
+    }
+    if (!validSource) {
       throw new AppError('INVALID_SOURCE_ADDRESS', '来源钱包地址与网络不符。');
     }
     if (!/^0x[\da-fA-F]{40}$/.test(input.recipient) || /^0x0{40}$/i.test(input.recipient)) {
@@ -95,6 +100,13 @@ export class OrderService {
       || !/^0x[\da-fA-F]{40}$/.test(draft.transaction.to) || !/^0x(?:[\da-fA-F]{2})*$/.test(draft.transaction.data)
       || !/^\d{1,78}$/.test(draft.transaction.value))) {
       throw new AppError('INVALID_PROVIDER_QUOTE', '上游交易参数未通过核验。', 502);
+    }
+    if (draft.transaction.kind === 'solana') {
+      try {
+        if (route.id !== SOLANA_ROUTE.id || route.sourceToken !== SOLANA_ROUTE.sourceToken || route.decimals !== 6
+          || route.sourceChainId !== SOLANA_ROUTE.sourceChainId || draft.transaction.chainId !== route.sourceChainId || draft.approval) throw new Error('Unexpected Solana route');
+        validateSolanaInstructions(draft.transaction.instructions, input.sourceAddress, units.toString(), draft.protocolOrderId ?? '');
+      } catch { throw new AppError('INVALID_PROVIDER_QUOTE', 'Solana 交易参数未通过核验。', 502); }
     }
     const quote: StoredQuote = { ...draft, id: newId() };
     this.store.saveQuote(quote);

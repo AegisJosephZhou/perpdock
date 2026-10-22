@@ -1,0 +1,41 @@
+{
+  "chains": [
+    {
+      "id": 1337,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "hypevm",
+      "protocol": {
+        "v2": {
+          "chainId": "hyperliquid",
+          "depository": "0x66cf0aace1b4e562593bec10ec7868fba9932224"
+        }
+      }
+    },
+    {
+      "id": 8453,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "evm",
+      "protocol": {
+        "v2": {
+          "chainId": "base",
+          "depository": "0x4cd00e387622c35bddb9b4c962c136462338bc31"
+        }
+      }
+    },
+    {
+      "id": 792703809,
+      "depositEnabled": true,
+      "disabled": false,
+      "vmType": "svm",
+      "protocol": {
+        "v2": {
+          "chainId": "solana",
+          "depository": "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
+          "depositoryVault": "7uTT8Xi5RWXzy7h9XL244GRgEycDYDhLjr3ZyNdXi8pZ"
+        }
+      }
+    }
+  ]
+}

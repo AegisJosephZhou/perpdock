@@ -100,7 +100,7 @@ function securityHeaders(headers) {
   exact('object-src', ["'none'"]);
   exact('frame-ancestors', ["'none'"]);
   const walletConnectConfigured = directives.get('connect-src')?.includes('wss://relay.walletconnect.org') ?? false;
-  exact('connect-src', ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com',
+  exact('connect-src', ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com',
     ...(walletConnectConfigured ? WALLETCONNECT_CONNECT_SOURCES : [])]);
   if (walletConnectConfigured) exact('frame-src', ['https://verify.walletconnect.org']);
   else if (directives.has('frame-src')) exact('frame-src', ["'self'"]);
@@ -110,7 +110,7 @@ function securityHeaders(headers) {
 }
 
 function builtAssets(html) {
-  requireCheck(/<title>\s*Perpex(?:\s|[·|—-]|<\/title>)/i.test(html), 'UNEXPECTED_HTML_TITLE');
+  requireCheck(/<title>\s*(?:Dock|Perpex)(?:\s|[·|—-]|<\/title>)/i.test(html), 'UNEXPECTED_HTML_TITLE');
   requireCheck(!/<base\b/i.test(html), 'UNEXPECTED_BASE_ELEMENT');
   const assets = new Map();
   let scripts = 0;
@@ -169,7 +169,7 @@ function configSnapshot(body) {
       Number.isSafeInteger(route.sourceChainId) && route.sourceChainId > 0 &&
       typeof route.symbol === 'string' && /^[A-Z][A-Z0-9]{0,11}$/.test(route.symbol) &&
       Number.isInteger(route.decimals) && route.decimals >= 0 && route.decimals <= 30 &&
-      ['evm', 'tron'].includes(route.walletType) && typeof route.available === 'boolean', 'INVALID_ROUTES');
+      ['evm', 'tron', 'solana'].includes(route.walletType) && typeof route.available === 'boolean', 'INVALID_ROUTES');
     seen.add(route.id);
     return { id: route.id, sourceChainId: route.sourceChainId, symbol: route.symbol, decimals: route.decimals, walletType: route.walletType, available: route.available };
   });

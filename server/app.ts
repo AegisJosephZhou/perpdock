@@ -20,7 +20,9 @@ const quoteInput = z.object({
   attribution: z.unknown().optional(),
 }).strict();
 const orderInput = z.object({ quoteId: z.string().regex(/^[\w-]{32}$/) }).strict();
-const transactionInput = z.object({ txHash: z.string().min(64).max(66) }).strict();
+// Solana signatures are base58-encoded 64 bytes (up to 88 characters).
+// OrderService applies the exact network-specific validation before storing them.
+const transactionInput = z.object({ txHash: z.string().min(64).max(88) }).strict();
 const idSchema = z.string().regex(/^[\w-]{32}$/);
 
 export interface HttpOptions {
@@ -45,7 +47,7 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   app.set('trust proxy', options.trustProxyHops ?? false);
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"],
-    connectSrc: ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com',
+    connectSrc: ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com',
       ...(walletConnect ? [
         'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org',
         'https://verify.walletconnect.com', 'https://verify.walletconnect.org',

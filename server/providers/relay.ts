@@ -9,6 +9,8 @@ import { verifyEthereumSource } from '../chain/ethereum.js';
 import { verifyEvmSource } from '../chain/evm.js';
 import { assertEvmSourceHealthy } from '../chain/evm-rpc.js';
 import { REVIEWED_EVM_SOURCES, reviewedEvmSource } from '../../shared/route-registry.js';
+import { SOLANA_ROUTE, SOLANA_DEPOSITORY, SOLANA_VAULT, solanaPayerAddress, validateSolanaDepositData } from '../../shared/solana.js';
+import { assertSolanaSourceHealthy, verifySolanaSource } from '../chain/solana.js';
 
 const API = 'https://api.relay.link';
 export const TRON_USDT = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
@@ -17,6 +19,7 @@ export const TRON_DEPOSITORY = 'TXtEs6t2oUWQsNos7m68gbHdE9Q5n6x2oN';
 const SOLVER = '0xf70da97812cb96acdf810712aa562db8dfa3dbef';
 const sourceConfigs: { route: Route; protocolChain: string; depository: string }[] = [
   ...REVIEWED_EVM_SOURCES,
+  { route: SOLANA_ROUTE, protocolChain: 'solana', depository: SOLANA_DEPOSITORY },
   { route: { id: 'tron-usdt-hypercore', label: 'Tron USDT → Hyperliquid Perps USDC', sourceChain: 'Tron', sourceChainId: 728126428, sourceToken: TRON_USDT, symbol: 'USDT', decimals: 6, walletType: 'tron', available: true, gasSymbol: 'TRX', assetNote: 'Tron 主网 TRC20 USDT。' }, protocolChain: 'tron', depository: TRON_DEPOSITORY },
 ];
 function sourceConfig(routeId: string) {
@@ -41,10 +44,10 @@ const QuoteSchema = z.object({ requestId: hex32, steps: z.array(z.object({ id: z
   fees: z.record(z.string(), Amount),
   protocol: z.object({ v2: z.object({ orderId: hex32, orderData: OrderDataSchema, orderSignature: z.string().regex(/^0x[0-9a-fA-F]{130}$/), paymentDetails: z.object({ chainId: z.string(), depository: z.string(), currency: z.string(), amount: integer }) }) }),
 });
-const ChainSchema = z.object({ id: z.number().int(), vmType: z.string(), disabled: z.boolean().optional(), depositEnabled: z.boolean().optional(), protocol: z.object({ v2: z.object({ chainId: z.string(), depository: z.string().optional() }).optional() }).optional() });
+const ChainSchema = z.object({ id: z.number().int(), vmType: z.string(), disabled: z.boolean().optional(), depositEnabled: z.boolean().optional(), protocol: z.object({ v2: z.object({ chainId: z.string(), depository: z.string().optional(), depositoryVault: z.string().optional() }).optional() }).optional() });
 type Chain = z.infer<typeof ChainSchema>;
 let chainCache: { expires: number; chains: Chain[] } | undefined;
-const VM_TYPES: Record<string, VmType> = { evm: 'ethereum-vm', hypevm: 'hyperliquid-vm', tvm: 'tron-vm' };
+const VM_TYPES: Record<string, VmType> = { evm: 'ethereum-vm', hypevm: 'hyperliquid-vm', tvm: 'tron-vm', svm: 'solana-vm' };
 const headers = (): Record<string, string> => process.env.RELAY_API_KEY ? { 'x-api-key': process.env.RELAY_API_KEY } : {};
 async function chains(): Promise<Chain[]> {
   if (chainCache && chainCache.expires > Date.now()) return chainCache.chains;
@@ -68,6 +71,10 @@ export async function getRoutes(): Promise<Route[]> {
   return Promise.all(sourceConfigs.map(async source => {
     try { validateSourceRegistry(source, config); }
     catch { return { ...source.route, available: false, reason: '无法验证该来源链的主网配置，暂时关闭这条路线的新报价。' }; }
+    if (source.route.walletType === 'solana') {
+      try { await assertSolanaSourceHealthy(); return { ...source.route }; }
+      catch { return { ...source.route, available: false, reason: 'Solana 主网 RPC 暂时不可用，暂时关闭新报价。' }; }
+    }
     if (source.route.walletType !== 'evm') return { ...source.route };
     try { await assertEvmSourceHealthy(source.route.id); return { ...source.route }; }
     catch (error) {
@@ -79,7 +86,8 @@ export async function getRoutes(): Promise<Route[]> {
 
 function validateSourceRegistry(source: ReturnType<typeof sourceConfig>, config: Chain[]) {
   const origin = config.find(c => c.id === source.route.sourceChainId);
-  requireMatch(origin?.protocol?.v2?.chainId === source.protocolChain && origin.protocol.v2.depository && sameSource(source.route, origin.protocol.v2.depository, source.depository) && !origin.disabled && origin.depositEnabled !== false && origin.vmType === (source.route.walletType === 'evm' ? 'evm' : 'tvm'), `不认可的 ${source.route.sourceChain} depository 或网络配置。`);
+  requireMatch(origin?.protocol?.v2?.chainId === source.protocolChain && origin.protocol.v2.depository && sameSource(source.route, origin.protocol.v2.depository, source.depository) && !origin.disabled && origin.depositEnabled !== false && origin.vmType === (source.route.walletType === 'evm' ? 'evm' : source.route.walletType === 'solana' ? 'svm' : 'tvm'), `不认可的 ${source.route.sourceChain} depository 或网络配置。`);
+  if (source.route.walletType === 'solana') requireMatch(origin?.protocol?.v2?.depositoryVault === SOLANA_VAULT, '不认可的 Solana vault 配置。');
   requireMatch(config.some(c => c.id === 1337 && c.protocol?.v2?.chainId === 'hyperliquid' && c.vmType === 'hypevm' && !c.disabled), '未找到官方 HyperCore 网络配置。');
 }
 
@@ -88,7 +96,7 @@ export async function validateRelayQuote(raw: unknown, input: QuoteRequest, cano
   const source = sourceConfig(input.routeId);
   const { route, protocolChain, depository } = source;
   const q = QuoteSchema.parse(raw);
-  const sourceHex = route.walletType === 'tron' ? tronHex(input.sourceAddress) : evmAddress(input.sourceAddress);
+  const sourceHex = route.walletType === 'tron' ? tronHex(input.sourceAddress) : route.walletType === 'solana' ? solanaPayerAddress(input.sourceAddress) : evmAddress(input.sourceAddress);
   const recipient = evmAddress(input.recipient);
   const units = sourceAmount(input.amount, route);
   const p = q.protocol.v2;
@@ -114,7 +122,13 @@ export async function validateRelayQuote(raw: unknown, input: QuoteRequest, cano
   const depositData = q.steps.find(s => s.id === 'deposit')!.items[0]!.data;
   const approval = q.steps.find(s => s.id === 'approve');
   let transaction: WalletTransaction;
-  if (route.walletType === 'tron') {
+  if (route.walletType === 'solana') {
+    requireMatch(!approval, 'Solana USDC 入金不应包含授权步骤。');
+    let instructions;
+    try { instructions = validateSolanaDepositData(depositData, input.sourceAddress, units.toString(), computed); }
+    catch { throw new UpstreamError('UNSAFE_PROVIDER_QUOTE', 'Solana 付款指令未绑定正确的代币、金额、付款人、订单和审核账户。'); }
+    transaction = { kind: 'solana', chainId: route.sourceChainId, instructions };
+  } else if (route.walletType === 'tron') {
     const deposit = TronIntent.parse(depositData);
     const params = deposit.parameter;
     requireMatch(params.owner_address.toLowerCase() === sourceHex && params.contract_address.toLowerCase() === tronHex(TRON_DEPOSITORY) && (params.call_value ?? 0) === 0 && (params.call_token_value ?? 0) === 0 && params.token_id === undefined, '付款调用的账户或目标合约不合法。');
@@ -145,9 +159,9 @@ export async function validateRelayQuote(raw: unknown, input: QuoteRequest, cano
     routeId: route.id, sourceAddress: input.sourceAddress, recipient, amount: formatUnits(units, route.decimals), amountBaseUnits: units.toString(),
     expectedReceive: formatUnits(BigInt(output.expectedAmount), 8), minReceive: formatUnits(BigInt(output.minimumAmount), 8),
     expiresAt: new Date(Math.min(now + 120_000, p.orderData.output.deadline * 1000)).toISOString(), provider: 'Relay', fees: selectedFees,
-    protocolOrderId: computed, ...(route.walletType === 'tron' ? { estimatedSeconds: q.details.timeEstimate } : {}), transaction,
+    protocolOrderId: computed, ...(route.walletType !== 'evm' ? { estimatedSeconds: q.details.timeEstimate } : {}), transaction,
     ...(approval || route.walletType === 'evm' ? { approval: { token: route.sourceToken, spender: depository, amount: units.toString() } } : {}),
-    warnings: [route.walletType === 'tron' ? '需要 TRX 支付授权和付款的带宽/能量成本，实际网络费以钱包为准。' : `需要 ${route.sourceChain} 主网 ${route.gasSymbol} 支付授权和付款手续费，实际费用以钱包为准。${reviewedEvmSource(route.id)!.finalityWarning}`, ...(route.assetNote ? [route.assetNote] : []), '路由使用 Relay 协议及流动性服务；可能发生延迟或退款，失败不代表立即退款。', '这是主网真实资金交易，请确认你能够控制 Hyperliquid 收款地址。', '退款可能在源链或 HyperCore 处理，具体以协议状态和可验证记录为准。'],
+    warnings: [route.walletType === 'tron' ? '需要 TRX 支付授权和付款的带宽/能量成本，实际网络费以钱包为准。' : route.walletType === 'solana' ? '需要 SOL 支付网络费及可能的代币账户租金；等待 Solana finalized 最终确认，实际费用以钱包为准。' : `需要 ${route.sourceChain} 主网 ${route.gasSymbol} 支付授权和付款手续费，实际费用以钱包为准。${reviewedEvmSource(route.id)!.finalityWarning}`, ...(route.assetNote ? [route.assetNote] : []), '路由使用 Relay 协议及流动性服务；可能发生延迟或退款，失败不代表立即退款。', '这是主网真实资金交易，请确认你能够控制 Hyperliquid 收款地址。', '退款可能在源链或 HyperCore 处理，具体以协议状态和可验证记录为准。'],
     providerData: { requestId: q.requestId, orderId: computed, quotedAt: now, deadline: p.orderData.output.deadline, expectedAmount: output.expectedAmount, minimumAmount: output.minimumAmount },
   };
 }
@@ -155,19 +169,20 @@ export async function validateRelayQuote(raw: unknown, input: QuoteRequest, cano
 export async function getQuote(input: QuoteRequest): Promise<ProviderQuote> {
   const source = sourceConfig(input.routeId);
   const { route } = source;
-  if (route.walletType === 'tron') tronHex(input.sourceAddress); else evmAddress(input.sourceAddress);
+  if (route.walletType === 'tron') tronHex(input.sourceAddress); else if (route.walletType === 'solana') solanaPayerAddress(input.sourceAddress); else evmAddress(input.sourceAddress);
   evmAddress(input.recipient);
   const amount = sourceAmount(input.amount, route).toString();
   const canonicalChains = await chains();
   validateSourceRegistry(source, canonicalChains);
   if (route.walletType === 'evm') await assertEvmSourceHealthy(route.id);
+  if (route.walletType === 'solana') await assertSolanaSourceHealthy();
   const raw = await postJson(`${API}/quote/v2`, { user: input.sourceAddress, recipient: input.recipient, originChainId: route.sourceChainId, destinationChainId: 1337, originCurrency: route.sourceToken, destinationCurrency: PERPS_USDC, amount, tradeType: 'EXACT_INPUT', protocolVersion: 'v2', includeProtocolData: true, explicitDeposit: true, useDepositAddress: false, refundTo: input.sourceAddress, slippageTolerance: '100' }, headers());
   return validateRelayQuote(raw, input, canonicalChains);
 }
 
 export async function verifySourceTransaction(quote: StoredQuote, txHash: string) {
   const { route } = sourceConfig(quote.routeId);
-  return route.walletType === 'tron' ? verifyTronSource(quote, txHash) : route.sourceChainId === 1 ? verifyEthereumSource(quote, txHash) : verifyEvmSource(quote, txHash);
+  return route.walletType === 'tron' ? verifyTronSource(quote, txHash) : route.walletType === 'solana' ? verifySolanaSource(quote, txHash) : route.sourceChainId === 1 ? verifyEthereumSource(quote, txHash) : verifyEvmSource(quote, txHash);
 }
 const StatusSchema = z.object({ status: z.enum(['waiting','depositing','pending','submitted','success','delayed','refund','failure']), inTxHashes: z.array(z.string()).optional(), txHashes: z.array(z.string()).optional(), originChainId: z.number().optional(), destinationChainId: z.number().optional(), updatedAt: z.number().optional() });
 export async function trackOrder(order: TrackedOrder): Promise<TrackingUpdate> {
@@ -175,15 +190,16 @@ export async function trackOrder(order: TrackedOrder): Promise<TrackingUpdate> {
   if (!order.sourceTxHash) return { status: 'awaiting_signature', statusMessage: '等待用户在钱包签署付款交易。' };
   const verified = await verifySourceTransaction({ ...order.quote, providerData: order.providerData }, order.sourceTxHash);
   if (!verified.valid) return { status: 'attention', statusMessage: verified.reason ?? '源交易核验未通过，请检查交易。' };
-  if (verified.pending) return { status: 'source_pending', statusMessage: route.walletType === 'evm' ? `已保存交易哈希。${reviewedEvmSource(route.id)!.finalityWarning}` : '已保存交易哈希，等待 Tron 固化确认。' };
+  if (verified.pending) return { status: 'source_pending', statusMessage: route.walletType === 'evm' ? `已保存交易哈希。${reviewedEvmSource(route.id)!.finalityWarning}` : route.walletType === 'solana' ? '已保存交易签名，等待 Solana finalized 最终确认。' : '已保存交易哈希，等待 Tron 固化确认。' };
+  const sameSourceTransaction = (hash: string) => route.walletType === 'solana' ? hash === order.sourceTxHash : hash.replace(/^0x/, '').toLowerCase() === order.sourceTxHash!.replace(/^0x/, '').toLowerCase();
   const requestId = hex32.parse(order.providerData.requestId);
   const status = StatusSchema.parse(await fetchJson(`${API}/intents/status/v3?requestId=${requestId}`, { headers: headers() }));
-  if (status.inTxHashes?.length && !status.inTxHashes.some(h => h.replace(/^0x/, '').toLowerCase() === order.sourceTxHash!.replace(/^0x/, '').toLowerCase())) return { status: 'attention', statusMessage: 'Relay 记录的源交易与订单不匹配，需人工核查。' };
+  if (status.inTxHashes?.length && !status.inTxHashes.some(sameSourceTransaction)) return { status: 'attention', statusMessage: 'Relay 记录的源交易与订单不匹配，需人工核查。' };
   if (status.originChainId !== undefined && status.originChainId !== route.sourceChainId || status.destinationChainId !== undefined && status.destinationChainId !== 1337) return { status: 'attention', statusMessage: 'Relay 记录的源链或目标链不匹配。' };
   if (status.status === 'refund' || status.status === 'failure') return { status: 'attention', statusMessage: status.status === 'refund' ? 'Relay 报告已退款；请核对钱包和退款链上记录。本系统未将其认定为充值成功。' : 'Relay 报告执行异常，源资金已转出，请依据原订单查询恢复或退款进度。', providerOrderId: requestId };
   if (status.status !== 'success') return { status: 'bridging', statusMessage: status.status === 'delayed' ? '源交易已固化，Relay 执行延迟；仍在追踪。' : '源交易已固化，等待 Relay 完成兑换和 HyperCore 转入。', providerOrderId: requestId };
   const fillHashes = (status.txHashes ?? []).filter(h => /^0x[0-9a-fA-F]{64}$/.test(h));
-  if (!status.inTxHashes?.some(h => h.replace(/^0x/, '').toLowerCase() === order.sourceTxHash!.replace(/^0x/, '').toLowerCase()) || fillHashes.length === 0) return { status: 'verifying_credit', statusMessage: 'Relay 报告完成，等待可归属于本单的源交易和目标交易证据。', providerOrderId: requestId };
+  if (!status.inTxHashes?.some(sameSourceTransaction) || fillHashes.length === 0) return { status: 'verifying_credit', statusMessage: 'Relay 报告完成，等待可归属于本单的源交易和目标交易证据。', providerOrderId: requestId };
   const quotedAt = z.number().int().parse(order.providerData.quotedAt);
   // updatedAt is the provider record's update time, not the fill time. Recover
   // from the original quote boundary with a server-persisted bounded cursor.

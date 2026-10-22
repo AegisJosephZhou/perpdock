@@ -22,6 +22,7 @@ services:
       OPTIMISM_RPC_URL: ${OPTIMISM_RPC_URL:-https://optimism.publicnode.com}
       POLYGON_RPC_URL: ${POLYGON_RPC_URL:-https://polygon-bor-rpc.publicnode.com}
       BNB_RPC_URL: ${BNB_RPC_URL:-https://bsc-rpc.publicnode.com}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
       PAUSE_NEW_ORDERS: ${PAUSE_NEW_ORDERS:-false}
       MIN_AMOUNT: ${MIN_AMOUNT:-10}
       MAX_AMOUNT: ${MAX_AMOUNT:-1000}
