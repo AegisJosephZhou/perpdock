@@ -19,10 +19,15 @@
     "test:watch": "vitest --configLoader runner",
     "test:live": "tsx scripts/live-smoke.ts",
     "test:production": "node scripts/production-smoke.mjs",
-    "test:deployment": "node --test tests/public-deployment.test.mjs tests/public-deployment-check.test.mjs",
-    "verify:deployment": "node scripts/verify-public-deployment.mjs"
+    "test:deployment": "node --test tests/public-deployment.test.mjs tests/public-deployment-check.test.mjs tests/uptime-monitors.test.mjs",
+    "verify:deployment": "node scripts/verify-public-deployment.mjs",
+    "report:orders": "tsx scripts/orders-report.ts",
+    "report:funnel": "tsx scripts/funnel-report.ts",
+    "uptime:configure": "node scripts/uptime-monitors.mjs"
   },
   "dependencies": {
+    "@sentry/node": "11.8.0",
+    "@sentry/react": "11.8.0",
     "@solana/web3.js": "1.98.4",
     "@walletconnect/core": "2.26.0",
     "@walletconnect/ethereum-provider": "2.26.0",

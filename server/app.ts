@@ -10,6 +10,7 @@ import { AppError } from './security.js';
 import { UpstreamError } from './chain/http.js';
 import type { AppConfig } from '../shared/types.js';
 import { REVIEWED_EVM_SOURCES } from '../shared/route-registry.js';
+import { apiRouteTemplate, type MonitoringConfig, type MonitoringReporter } from '../shared/observability.js';
 
 const quoteInput = z.object({
   routeId: z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/),
@@ -18,6 +19,7 @@ const quoteInput = z.object({
   recipient: z.string().regex(/^0x[\da-fA-F]{40}$/),
   // Optional metadata is validated independently; malformed analytics must not reject valid funding.
   attribution: z.unknown().optional(),
+  funnel: z.unknown().optional(),
 }).strict();
 const orderInput = z.object({ quoteId: z.string().regex(/^[\w-]{32}$/) }).strict();
 // Solana signatures are base58-encoded 64 bytes (up to 88 characters).
@@ -29,6 +31,9 @@ export interface HttpOptions {
   allowedOrigins: string[]; staticDir?: string; version?: string;
   logging?: boolean; rateLimitMax?: number; trustProxyHops?: number;
   walletConnectProjectId?: string;
+  monitoring?: MonitoringConfig;
+  monitoringReporter?: MonitoringReporter;
+  funnel?: { client(value: unknown, at: string): boolean };
 }
 
 /** Public dashboard identifier only. Never forward the process environment to the browser. */
@@ -48,6 +53,7 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   app.use(helmet({ contentSecurityPolicy: { directives: {
     defaultSrc: ["'self'"], scriptSrc: ["'self'"],
     connectSrc: ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com',
+      ...(options.monitoring ? [new URL(options.monitoring.dsn).origin] : []),
       ...(walletConnect ? [
         'wss://relay.walletconnect.com', 'wss://relay.walletconnect.org',
         'https://verify.walletconnect.com', 'https://verify.walletconnect.org',
@@ -91,6 +97,17 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   }, express.json({ limit: '1kb', strict: true }), (req, res) => {
     res.json({ accepted: service.recordLanding(req.body) });
   });
+  app.post('/api/funnel/events', rateLimit({ windowMs: 60_000, limit: 60,
+    standardHeaders: 'draft-8', legacyHeaders: false,
+    handler: (_req, res) => { res.status(429).json({ accepted: false }); },
+  }), (req, res, next) => {
+    if (!req.is('application/json')) { res.status(415).json({ accepted: false }); return; }
+    next();
+  }, express.json({ limit: '2kb', strict: true }), (req, res) => {
+    let accepted = false;
+    try { accepted = options.funnel?.client(req.body, new Date().toISOString()) ?? false; } catch { /* fail open */ }
+    res.json({ accepted });
+  });
   // Analytics has its own budget and cannot consume the funding API's shared rate limit.
   app.use('/api', rateLimit({ windowMs: 60_000, limit: options.rateLimitMax ?? 120,
     standardHeaders: 'draft-8', legacyHeaders: false,
@@ -118,12 +135,18 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   };
 
   app.get('/api/health', (_req, res) => { res.json({ status: 'ok', version: options.version ?? '0.1.0' }); });
+  // Local DB readiness only. No accounts, RPC credentials or funding operations are exposed.
+  app.get('/api/ready', (_req, res) => {
+    const ready = service.store.ready();
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'unavailable' });
+  });
   app.get('/api/config', asyncRoute(async (_req, res) => {
-    res.json({ ...await service.config(), ...(walletConnect ? { walletConnect } : {}) });
+    res.json({ ...await service.config(), ...(walletConnect ? { walletConnect } : {}),
+      ...(options.monitoring ? { monitoring: options.monitoring } : {}) });
   }));
   app.post('/api/quotes', asyncRoute(async (req, res) => {
-    const { attribution, ...input } = parse(quoteInput, req.body);
-    res.status(201).json(await service.quote(input, attribution));
+    const { attribution, funnel, ...input } = parse(quoteInput, req.body);
+    res.status(201).json(await service.quote(input, attribution, funnel));
   }));
   app.post('/api/orders', (req, res, next) => {
     try {
@@ -136,6 +159,11 @@ export function createApp(service: OrderService, options: HttpOptions): express.
   app.get('/api/orders/:id', asyncRoute(async (req, res) => {
     const { id, token } = credentials(req);
     res.json(await service.get(id, token));
+  }));
+  app.post('/api/orders/:id/stage', asyncRoute(async (req, res) => {
+    const { id, token } = credentials(req);
+    await service.recordClientStage(id, token, req.body);
+    res.json({ accepted: true });
   }));
   app.post('/api/orders/:id/transaction', asyncRoute(async (req, res) => {
     const { id, token } = credentials(req);
@@ -156,7 +184,7 @@ export function createApp(service: OrderService, options: HttpOptions): express.
     app.use(express.static(options.staticDir, { index: false }));
     app.get(/.*/, (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(resolve(options.staticDir!, 'index.html')); });
   }
-  const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, _next) => {
+  const errorHandler: ErrorRequestHandler = (error: unknown, req, res, _next) => {
     if (res.headersSent) return;
     let known = error instanceof AppError ? error : undefined;
     if (!known && error instanceof UpstreamError) {
@@ -175,6 +203,10 @@ export function createApp(service: OrderService, options: HttpOptions): express.
       if (error.type === 'entity.too.large') known = new AppError('BODY_TOO_LARGE', '请求体超过大小限制。', 413);
       if (error.type === 'entity.parse.failed') known = new AppError('INVALID_JSON', '请求体不是有效 JSON。');
     }
+    try {
+      options.monitoringReporter?.report({ stage: 'server_api', route: apiRouteTemplate(String(req.route?.path ?? '').replace(/^\/api/, '')),
+        code: known?.code ?? 'UPSTREAM_UNAVAILABLE', status: known?.httpStatus ?? 502, requestId: res.locals.requestId });
+    } catch { /* Error reporting must not change the funding API response. */ }
     res.status(known?.httpStatus ?? 502).json({ error: {
       code: known?.code ?? 'UPSTREAM_UNAVAILABLE',
       message: known?.message ?? '暂时无法取得可信的上游数据，请稍后再试。不会自动执行付款。',

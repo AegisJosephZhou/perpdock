@@ -14,6 +14,7 @@ const isRecord = value => value !== null && typeof value === 'object' && !Array.
 const JSON_LIMIT = 128 * 1024;
 const HTML_LIMIT = 256 * 1024;
 const ASSET_LIMIT = 4 * 1024 * 1024;
+const SENTRY_ORIGIN = /^https:\/\/o\d+\.ingest(?:\.(?:us|de))?\.sentry\.io$/;
 // Exact optional browser destinations reviewed with Core 2.26 and shared/route-registry.ts.
 // Keep aligned with server/app.ts; no private operator RPC URLs are accepted.
 const WALLETCONNECT_CONNECT_SOURCES = [
@@ -100,13 +101,16 @@ function securityHeaders(headers) {
   exact('object-src', ["'none'"]);
   exact('frame-ancestors', ["'none'"]);
   const walletConnectConfigured = directives.get('connect-src')?.includes('wss://relay.walletconnect.org') ?? false;
+  const monitoringOrigins = (directives.get('connect-src') ?? []).filter(source => SENTRY_ORIGIN.test(source));
+  requireCheck(monitoringOrigins.length <= 1, 'UNREVIEWED_CSP');
+  const monitoringOrigin = monitoringOrigins[0];
   exact('connect-src', ["'self'", 'https://api.trongrid.io', 'https://api.tronstack.io', 'https://tron-rpc.publicnode.com', 'https://api.mainnet-beta.solana.com',
-    ...(walletConnectConfigured ? WALLETCONNECT_CONNECT_SOURCES : [])]);
+    ...(walletConnectConfigured ? WALLETCONNECT_CONNECT_SOURCES : []), ...(monitoringOrigin ? [monitoringOrigin] : [])]);
   if (walletConnectConfigured) exact('frame-src', ['https://verify.walletconnect.org']);
   else if (directives.has('frame-src')) exact('frame-src', ["'self'"]);
   if (directives.has('script-src-elem')) exact('script-src-elem', ["'self'"]);
   if (directives.has('script-src-attr')) exact('script-src-attr', ["'none'"]);
-  return { walletConnectConfigured };
+  return { walletConnectConfigured, monitoringOrigin };
 }
 
 function builtAssets(html) {
@@ -156,11 +160,33 @@ function hasHtmlPrefix(bytes) {
   return /^(?:<!doctype\b|<\/?[a-z][a-z\d:-]*(?:\s|\/?>))/i.test(text.slice(offset));
 }
 
+// This standalone Node checker does not load application TypeScript. Keep its
+// public configuration validation aligned with shared/observability.ts. Only the
+// matching origin is retained privately; the report contains a boolean, never a DSN.
+function monitoringConfigOrigin(value) {
+  if (value === undefined) return;
+  requireCheck(isRecord(value) && value.enabled === true &&
+    Object.keys(value).every(key => ['enabled', 'dsn', 'environment', 'release'].includes(key)) &&
+    typeof value.dsn === 'string' && value.dsn.length <= 256 && !/\s/.test(value.dsn), 'INVALID_MONITORING_CONFIG');
+  let dsn;
+  try { dsn = new URL(value.dsn); } catch { throw new CheckError('INVALID_MONITORING_CONFIG'); }
+  requireCheck(dsn.protocol === 'https:' && /^[a-f\d]{32}$/i.test(dsn.username) && !dsn.password && !dsn.port && !dsn.search && !dsn.hash &&
+    SENTRY_ORIGIN.test(dsn.origin) && /^\/[1-9]\d{0,19}$/.test(dsn.pathname) &&
+    (value.environment === undefined || ['production', 'staging', 'development'].includes(value.environment)) &&
+    (value.release === undefined || (typeof value.release === 'string' && /^(?:[a-f\d]{7,40}|v?\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[a-z\d.-]{1,32})?)$/.test(value.release))),
+  'INVALID_MONITORING_CONFIG');
+  return dsn.origin;
+}
+
 function configSnapshot(body) {
   requireCheck(isRecord(body) && body.appName === 'Perpex' && body.network === 'mainnet' && typeof body.paused === 'boolean' && isRecord(body.limits), 'INVALID_CONFIG');
   const walletConnectConfigured = body.walletConnect !== undefined;
   requireCheck(!walletConnectConfigured || (isRecord(body.walletConnect) &&
     typeof body.walletConnect.projectId === 'string' && /^[a-f\d]{32}$/i.test(body.walletConnect.projectId)), 'INVALID_WALLETCONNECT_CONFIG');
+  const monitoringOrigin = monitoringConfigOrigin(body.monitoring);
+  const funnelConfigured = body.funnel !== undefined;
+  requireCheck(!funnelConfigured || (isRecord(body.funnel) && body.funnel.enabled === true &&
+    Object.keys(body.funnel).length === 1), 'INVALID_FUNNEL_CONFIG');
   amountUnits(body.limits.minAmount); amountUnits(body.limits.maxAmount);
   requireCheck(Array.isArray(body.routes) && body.routes.length > 0 && body.routes.length <= 32, 'INVALID_ROUTES');
   const seen = new Set();
@@ -174,7 +200,8 @@ function configSnapshot(body) {
     return { id: route.id, sourceChainId: route.sourceChainId, symbol: route.symbol, decimals: route.decimals, walletType: route.walletType, available: route.available };
   });
   return { config: { appName: body.appName, network: body.network, paused: body.paused, walletConnectConfigured,
-    limits: { minAmount: body.limits.minAmount, maxAmount: body.limits.maxAmount } }, routes };
+    monitoringConfigured: monitoringOrigin !== undefined, funnelConfigured,
+    limits: { minAmount: body.limits.minAmount, maxAmount: body.limits.maxAmount } }, routes, monitoringOrigin };
 }
 
 export async function verifyDeployment(options, { fetchImpl = globalThis.fetch, now = () => new Date() } = {}) {
@@ -268,6 +295,7 @@ export async function verifyDeployment(options, { fetchImpl = globalThis.fetch, 
     report.routeAvailability = { available: snapshot.routes.filter(route => route.available).length, total: snapshot.routes.length,
       meaning: 'Observed route gate only; does not prove quotes, payment verification or funds readiness.' };
     requireCheck(securityProfile?.walletConnectConfigured === snapshot.config.walletConnectConfigured, 'WALLETCONNECT_CSP_CONFIG_MISMATCH');
+    requireCheck(securityProfile?.monitoringOrigin === snapshot.monitoringOrigin, 'MONITORING_CSP_CONFIG_MISMATCH');
     requireCheck(snapshot.config.paused, 'NEW_ORDERS_NOT_PAUSED');
     requireCheck(amountUnits(snapshot.config.limits.minAmount) === amountUnits(expectedMin) && amountUnits(snapshot.config.limits.maxAmount) === amountUnits(expectedMax), 'UNEXPECTED_AMOUNT_LIMITS');
   });

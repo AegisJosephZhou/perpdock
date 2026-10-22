@@ -1,5 +1,21 @@
 # 验收记录
 
+## 2026-10-22：隔离故障注入与恢复
+
+新增一项集成演练，覆盖报价上游和已建单查询上游的断连及恢复。先成功请求同一loopback上游，再关闭其监听，经真实HTTP处理器、`fetchJson`、SQLite与Sentry NodeClient验证：报价返回503/`UPSTREAM_UNAVAILABLE`，响应和SDK事件的`requestId`一致；漏斗持久化`quote_requested`/`quote_failed`，该失败尝试未产生报价或资金订单。恢复上游后报价返回201。
+
+合成订单查询失败时保留`bridging`和源交易，持久化`trackingCheck.unavailable`、尝试时间及原成功检查时间，增加失败计数并安排重试；运营报告`queryUnavailableOrders=1`。恢复查询后结果为`ok`、失败计数及不可用计数归零，订单仍未完成。所有交易/核验结果均为测试夹具，未签名、广播或查询真实链。
+
+新增定向演练和TypeScript检查通过；本轮只增加测试及说明，未重跑此前763项全量测试或部署。SDK通过自定义transport向本地HTTP接收器发送两个JSON envelope；没有Sentry项目配置，**真实SaaS收件、生产transport与告警仍未验收**。漏斗未存`requestId`、后台错误无订单关联编号的限制见[监控说明](OBSERVABILITY.md)。
+
+## 2026-10-22：监控、完整漏斗与入金运营记录
+
+新增默认关闭的 Sentry 前后端错误监控、匿名完整漏斗与 PostHog 有界持久队列、授权签名/广播声明及服务器观察/目标账本时间、只读逐单 CSV/JSON 和成功率/耗时/卡单报告；另提供 Better Stack 每60秒外部探测配置工具，默认只生成离线计划。见 [监控说明](OBSERVABILITY.md)、[漏斗](FUNNEL.md)、[入金运营记录](ORDER-OPERATIONS.md)。
+
+Node 24.19.0 最终 **763/763 应用测试（37文件，无跳过）、57/57 部署及 uptime 工具检查、TypeScript、Vite 与服务端/报告编译通过**。独立交叉审查修复了缺源确认时间旧单的成功率分母、末次发送中断后的丢弃计数、会话轮换漏记 landing、uptime URL 路径大小写回读及启用 Sentry 后部署 CSP 检查适配。测试使用合成供应商、临时数据库和假 SaaS transport；实际 Sentry SDK envelope 的字段及附件过滤有验证。
+
+生产依赖审计仍为0 high/critical、4 moderate，与 Solana 基线一致；构建体积提示保留。未合并、未部署、未创建外部监控、未向真实 Sentry/PostHog 项目发送数据，也未读取生产订单或进行真实钱包操作。凭据配置、SaaS实际收数、60秒监控生效与告警送达待后续获准启用后验收。以下为此前功能验收，不替代本轮状态。
+
 ## 2026-10-22：Solana 原生 USDC
 
 新增 Solana 原生 USDC → Hyperliquid 默认 Perps，Phantom / Solflare 浏览器扩展路径；范围与 RPC 限制见 [Solana 说明](SOLANA.md)。当前代码八个网络、十条路线，前轮中英文与可选归因保留。

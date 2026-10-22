@@ -106,7 +106,7 @@ describe('positive HyperCore credit evidence', () => {
   const status = fixture('relay-history-status.json');
   const recipient = '0x1d26f48ac0c949d739461bffebb5bfd0148676cf';
   it('matches live historical Relay source+destination status to actual default-Perps ledger', () => {
-    expect(findPerpsCredit(ledger,recipient,status.txHashes,'500',1791816116000)).toEqual({hash:status.txHashes[0],amount:'506.546688'});
+    expect(findPerpsCredit(ledger,recipient,status.txHashes,'500',1791816116000)).toEqual({hash:status.txHashes[0],amount:'506.546688',time:1791816176907});
   });
   it('does not count spot credit, wrong recipient/hash, insufficient amount or earlier transaction', () => {
     expect(findPerpsCredit(ledger,recipient,[],'500',0)).toBeUndefined();

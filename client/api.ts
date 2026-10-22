@@ -1,31 +1,51 @@
 import type { Account, AppConfig, Order, Quote, QuoteRequest } from '../shared/types.js';
 import { getQuoteAttribution } from './attribution.js';
+import { getQuoteFunnel } from './funnel.js';
+import { apiRouteTemplate } from '../shared/observability.js';
+import { configureBrowserMonitoring, reportClientError } from './observability.js';
 
 export class ApiError extends Error {
   constructor(message: string, public code: string, public requestId?: string) { super(message); }
 }
+function networkFailureCode(error: unknown): 'REQUEST_TIMEOUT' | 'NETWORK_ERROR' {
+  try { if (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) return 'REQUEST_TIMEOUT'; } catch { /* Preserve original fetch failure. */ }
+  return 'NETWORK_ERROR';
+}
 
-async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...options,
-    signal: AbortSignal.timeout(30_000),
-    cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
-  });
+async function request<T>(path: string, options: RequestInit = {}, token?: string, routeId?: string): Promise<T> {
+  const context = { stage: 'client_api' as const, route: apiRouteTemplate(path), routeId };
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      ...options,
+      signal: AbortSignal.timeout(30_000),
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers },
+    });
+  } catch (error) {
+    reportClientError({ ...context, code: networkFailureCode(error) });
+    throw error;
+  }
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const error = (body as { error?: { message?: string; code?: string; requestId?: string } } | null)?.error;
+    reportClientError({ ...context, code: error?.code || 'HTTP_ERROR', status: response.status, requestId: error?.requestId });
     throw new ApiError(error?.message || `请求未完成（HTTP ${response.status}）`, error?.code || 'HTTP_ERROR', error?.requestId);
   }
-  if (!body) throw new ApiError('服务暂时没有返回可读取的数据，请重试。', 'INVALID_RESPONSE');
+  if (!body) { reportClientError({ ...context, code: 'INVALID_RESPONSE' }); throw new ApiError('服务暂时没有返回可读取的数据，请重试。', 'INVALID_RESPONSE'); }
   return body as T;
 }
 
 export const api = {
-  config: () => request<AppConfig>('/config'),
+  config: async () => {
+    const config = await request<AppConfig>('/config');
+    configureBrowserMonitoring((config as AppConfig & { monitoring?: unknown }).monitoring);
+    return config;
+  },
   quote: (input: QuoteRequest) => {
     const attribution = getQuoteAttribution();
-    return request<Quote>('/quotes', { method: 'POST', body: JSON.stringify({ ...input, ...(attribution ? { attribution } : {}) }) });
+    const funnel = getQuoteFunnel();
+    return request<Quote>('/quotes', { method: 'POST', body: JSON.stringify({ ...input, ...(attribution ? { attribution } : {}), ...(funnel ? { funnel } : {}) }) }, undefined, input.routeId);
   },
   createOrder: (quoteId: string, key: string) => request<{ order: Order; accessToken: string }>('/orders', { method: 'POST', body: JSON.stringify({ quoteId }), headers: { 'Idempotency-Key': key } }),
   order: (id: string, token: string) => request<Order>(`/orders/${encodeURIComponent(id)}`, {}, token),
