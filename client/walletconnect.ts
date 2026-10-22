@@ -158,7 +158,7 @@ export async function connectWalletConnect(options: WalletConnectOptions): Promi
       rpcMap: { ...WALLETCONNECT_RPC_MAP }, showQrModal: false, telemetryEnabled: false, logger: 'silent',
       disableProviderPing: true, relayUrl: 'wss://relay.walletconnect.org',
       storage, customStoragePrefix, core,
-      metadata: { name: 'Perpex', description: '将稳定币存入你控制的 Hyperliquid Perps 账户', url: window.location.origin, icons: [] },
+      metadata: { name: 'Dock by Perpex', description: 'Fund your own Hyperliquid default Perps account', url: window.location.origin, icons: [] },
     });
     assertCurrent();
     sdk.on('display_uri', onUri);

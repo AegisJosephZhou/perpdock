@@ -5,6 +5,7 @@ import { OrderService } from './order-service.js';
 import { loadTokenSecret } from './security.js';
 import * as providers from './providers/index.js';
 import type { ProviderAdapter } from '../shared/types.js';
+import { attributionConfiguration, AttributionRecorder } from './attribution.js';
 
 const production = process.env.NODE_ENV === 'production';
 // Fail invalid public configuration before opening the order store or creating a local key.
@@ -12,10 +13,13 @@ const walletConnect = walletConnectConfig(process.env.WALLETCONNECT_PROJECT_ID);
 const dataDir = resolve(process.env.DATA_DIR ?? 'data');
 const tokenSecret = loadTokenSecret(resolve(dataDir, 'order-token.key'), process.env.ORDER_TOKEN_SECRET, production);
 const store = new Store(resolve(dataDir, 'funding.sqlite'));
+const attributionConfig = attributionConfiguration(process.env.ATTRIBUTION_ENABLED, process.env.ATTRIBUTION_CAMPAIGNS);
+const attribution = attributionConfig ? new AttributionRecorder(resolve(dataDir, 'attribution.sqlite'), attributionConfig) : undefined;
 const service = new OrderService(store, providers satisfies ProviderAdapter, {
   tokenSecret, appName: process.env.APP_NAME ?? 'Perpex',
   minAmount: process.env.MIN_AMOUNT ?? '10', maxAmount: process.env.MAX_AMOUNT ?? '1000',
   paused: () => process.env.PAUSE_NEW_ORDERS === 'true',
+  attribution,
 });
 const publicOrigin = process.env.PUBLIC_ORIGIN;
 if (production && !publicOrigin) throw new Error('Production requires PUBLIC_ORIGIN.');
@@ -30,6 +34,7 @@ const server = app.listen(port, process.env.HOST ?? '127.0.0.1', (error?: Error)
   if (error) {
     console.error(JSON.stringify({ event: 'server_listen_failed', code: (error as NodeJS.ErrnoException).code ?? 'UNKNOWN' }));
     store.close();
+    attribution?.close();
     process.exitCode = 1;
     return;
   }
@@ -45,7 +50,7 @@ let closing = false;
 const shutdown = (): void => {
   if (closing) return;
   closing = true;
-  server.close(() => { void service.stop().then(() => { store.close(); process.exit(0); }); });
+  server.close(() => { void service.stop().then(() => { store.close(); attribution?.close(); process.exit(0); }); });
   setTimeout(() => process.exit(1), 10_000).unref();
 };
 process.once('SIGTERM', shutdown);

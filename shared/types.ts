@@ -1,3 +1,5 @@
+import type { AttributionConfig } from './attribution.js';
+
 export type OrderStatus = 'awaiting_signature' | 'source_pending' | 'bridging' | 'verifying_credit' | 'completed' | 'attention' | 'expired';
 export interface Route {
   id: string; label: string; sourceChain: string; sourceChainId: number;
@@ -55,6 +57,8 @@ export interface ProviderAdapter {
 }
 export interface AppConfig {
   appName: string; network: 'mainnet'; routes: Route[]; limits: { minAmount: string; maxAmount: string }; paused: boolean;
+  /** Absent unless the optional first-party collector is enabled and available. */
+  attribution?: AttributionConfig;
   /** Public Reown dashboard identifier; omitted when WalletConnect is not configured. */
   walletConnect?: { projectId: string };
 }

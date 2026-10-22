@@ -1,10 +1,12 @@
 import type { AppConfig, Evidence, Order, OrderStatus, ProviderAdapter, Quote, QuoteRequest, StoredQuote, TrackingCheck, TrackingUpdate } from '../shared/types.js';
 import { AppError, decimalUnits, hashSecret, newId, normalizeTxHash, orderToken, verifyToken } from './security.js';
 import { Store } from './store.js';
+import type { AttributionRecorder } from './attribution.js';
 
 export interface ServiceOptions {
   tokenSecret: string; appName?: string; minAmount?: string; maxAmount?: string;
   paused?: () => boolean; now?: () => number;
+  attribution?: AttributionRecorder;
 }
 const stages: Partial<Record<OrderStatus, number>> = { awaiting_signature: 0, source_pending: 1, bridging: 2, verifying_credit: 3, completed: 4 };
 const publicQuote = ({ providerData: _private, ...quote }: StoredQuote): Quote => quote;
@@ -52,10 +54,15 @@ export class OrderService {
     return row.order;
   }
   async config(): Promise<AppConfig> {
+    const attribution = this.options.attribution?.publicConfig();
     return { appName: this.options.appName ?? 'HL Funding', network: 'mainnet', routes: await this.provider.getRoutes(),
-      limits: { minAmount: this.options.minAmount ?? '10', maxAmount: this.options.maxAmount ?? '1000' }, paused: this.options.paused?.() ?? false };
+      limits: { minAmount: this.options.minAmount ?? '10', maxAmount: this.options.maxAmount ?? '1000' }, paused: this.options.paused?.() ?? false,
+      ...(attribution ? { attribution } : {}) };
   }
-  async quote(input: QuoteRequest): Promise<Quote> {
+  recordLanding(context: unknown): boolean {
+    return this.options.attribution?.landing(context, this.timestamp()) ?? false;
+  }
+  async quote(input: QuoteRequest, attribution?: unknown): Promise<Quote> {
     this.assertOpen();
     const config = await this.config();
     const route = config.routes.find(candidate => candidate.id === input.routeId);
@@ -91,12 +98,16 @@ export class OrderService {
     }
     const quote: StoredQuote = { ...draft, id: newId() };
     this.store.saveQuote(quote);
+    this.options.attribution?.quote(quote.id, quote.routeId, attribution, this.timestamp());
     return publicQuote(quote);
   }
   create(quoteId: string, idempotencyKey: string): { order: Order; accessToken: string } {
     const keyHash = hashSecret(idempotencyKey);
     const previous = this.store.getIdempotent(keyHash, quoteId);
-    if (previous) return { order: previous, accessToken: this.token(previous.id) };
+    if (previous) {
+      this.options.attribution?.order(previous);
+      return { order: previous, accessToken: this.token(previous.id) };
+    }
     this.assertOpen();
     const quote = this.store.getQuote(quoteId);
     if (!quote) throw new AppError('QUOTE_NOT_FOUND', '报价不存在，请重新获取。', 404);
@@ -106,6 +117,7 @@ export class OrderService {
     const order: Order = { id: newId(), createdAt: at, updatedAt: at, quote: publicQuote(quote),
       status: 'awaiting_signature', statusMessage: message, events: [{ at, status: 'awaiting_signature', message }] };
     const saved = this.store.createOrder(order, hashSecret(this.token(order.id)), keyHash);
+    this.options.attribution?.order(saved);
     return { order: saved, accessToken: this.token(saved.id) };
   }
   private change(order: Order, status: OrderStatus, message: string, fields: Partial<Order> = {}): Order {
@@ -114,6 +126,7 @@ export class OrderService {
       next.events = [...order.events, { at: next.updatedAt, status, message: next.statusMessage }];
     }
     this.store.updateOrder(next);
+    this.options.attribution?.order(next);
     return next;
   }
   async get(id: string, token: string): Promise<Order> {

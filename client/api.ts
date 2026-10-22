@@ -1,4 +1,5 @@
 import type { Account, AppConfig, Order, Quote, QuoteRequest } from '../shared/types.js';
+import { getQuoteAttribution } from './attribution.js';
 
 export class ApiError extends Error {
   constructor(message: string, public code: string, public requestId?: string) { super(message); }
@@ -22,7 +23,10 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
 
 export const api = {
   config: () => request<AppConfig>('/config'),
-  quote: (input: QuoteRequest) => request<Quote>('/quotes', { method: 'POST', body: JSON.stringify(input) }),
+  quote: (input: QuoteRequest) => {
+    const attribution = getQuoteAttribution();
+    return request<Quote>('/quotes', { method: 'POST', body: JSON.stringify({ ...input, ...(attribution ? { attribution } : {}) }) });
+  },
   createOrder: (quoteId: string, key: string) => request<{ order: Order; accessToken: string }>('/orders', { method: 'POST', body: JSON.stringify({ quoteId }), headers: { 'Idempotency-Key': key } }),
   order: (id: string, token: string) => request<Order>(`/orders/${encodeURIComponent(id)}`, {}, token),
   report: (id: string, token: string, txHash: string) => request<Order>(`/orders/${encodeURIComponent(id)}/transaction`, { method: 'POST', body: JSON.stringify({ txHash }) }, token),

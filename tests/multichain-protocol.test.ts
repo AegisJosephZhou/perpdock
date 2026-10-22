@@ -154,6 +154,7 @@ function healthFetch(override?: (source: ReviewedEvmSource, body: RpcRequest, re
 
 describe('live-RPC gate without production bypasses', () => {
   it('returns nine reviewed routes and coalesces network/token health reads for 60 seconds', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     vi.resetModules(); const calls = healthFetch(); const adapter = await import('../server/providers/relay.js');
     const routes = await adapter.getRoutes(); expect(routes).toHaveLength(9); expect(routes.every(r => r.available)).toBe(true);
     expect(calls.filter(c => c.body.method === 'eth_chainId')).toHaveLength(6);
