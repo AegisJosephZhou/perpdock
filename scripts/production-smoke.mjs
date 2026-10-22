@@ -15,6 +15,7 @@ const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const children = new Set();
 const checks = [];
 const { REVIEWED_EVM_SOURCES } = await import('../dist/shared/route-registry.js');
+const { SOLANA_ROUTE, validateSolanaInstructions } = await import('../dist/shared/solana.js');
 let tempRoot;
 let stage = 'initialization';
 let interrupted = false;
@@ -141,7 +142,7 @@ try {
   const asset = await fetch(assetUrl, { signal: AbortSignal.timeout(5000) });
   requireCheck(asset.status === 200 && /javascript/.test(asset.headers.get('content-type') ?? '') && (await asset.text()).length > 1000, 'Built application JavaScript was not served.');
   const connect = index.headers.get('content-security-policy')?.split(';').find(value => value.startsWith('connect-src'));
-  requireCheck(connect === "connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com", 'Production CSP does not use the exact reviewed RPC allowlist.');
+  requireCheck(connect === "connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com https://api.mainnet-beta.solana.com", 'Production CSP does not use the exact reviewed RPC allowlist.');
   passed('Node 24 production health, built HTML/JS and exact CSP');
 
   stage = 'real read-only mainnet routes, account and quotes';
@@ -153,6 +154,7 @@ try {
   const cases = [
     ...REVIEWED_EVM_SOURCES.map(({ route }) => ({ routeId: route.id, chainId: route.sourceChainId, kind: 'evm', sourceAddress: recipient, amount: '10' })),
     { routeId: 'tron-usdt-hypercore', kind: 'tron', sourceAddress: tronSource, amount: '100' },
+    { routeId: SOLANA_ROUTE.id, kind: 'solana', sourceAddress: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB', amount: '10' },
   ];
   const orders = [];
   const quoteSnapshots = [];
@@ -168,6 +170,11 @@ try {
       requireCheck(quoted.body.transaction.chainId === test.chainId && quoted.body.transaction.value === '0', 'EVM payment context was incorrect.');
       requireCheck(/^0x[0-9a-f]{64}$/i.test(quoted.body.protocolOrderId ?? '') && quoted.body.transaction.data.toLowerCase().endsWith(quoted.body.protocolOrderId.slice(2).toLowerCase()), 'EVM payment was not bound to the verified protocol order.');
       requireCheck(quoted.body.estimatedSeconds === undefined && quoted.body.warnings?.length > 0, 'EVM finality warning was absent or total-time estimate misleading.');
+    }
+    if (test.kind === 'solana') {
+      requireCheck(quoted.body.transaction.chainId === SOLANA_ROUTE.sourceChainId && !quoted.body.approval, 'Solana payment context was incorrect.');
+      try { validateSolanaInstructions(quoted.body.transaction.instructions, test.sourceAddress, quoted.body.amountBaseUnits, quoted.body.protocolOrderId); }
+      catch { throw new AcceptanceError('Solana payment was not bound to the reviewed source, mint, amount and order.'); }
     }
     const idempotencyKey = randomUUID();
     const created = await request(server, '/api/orders', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ quoteId: quoted.body.id }) });

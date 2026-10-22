@@ -241,7 +241,7 @@ describe('HTTP boundary', () => {
     const read = await fetch(`${env.base}/api/orders/${order.id}`, { headers: { authorization: `Bearer ${accessToken}` } });
     expect(read.status).toBe(200); expect(read.headers.get('cache-control')).toBe('no-store');
     expect(read.headers.get('content-security-policy')?.split(';').find(rule => rule.startsWith('connect-src')))
-      .toBe("connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com");
+      .toBe("connect-src 'self' https://api.trongrid.io https://api.tronstack.io https://tron-rpc.publicnode.com https://api.mainnet-beta.solana.com");
     expect(await read.text()).not.toContain('SERVER_ONLY_VALUE');
     await env.service.submit(order.id, accessToken, tx);
     env.provider.trackOrder = vi.fn(async (): Promise<TrackingUpdate> => ({ status: 'verifying_credit', statusMessage: 'scanning', providerDataPatch: { creditScan: { startTime: 12345 }, unknownPrivateField: 'NEVER_IN_HTTP' } }));

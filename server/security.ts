@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { solanaSignature } from '../shared/solana.js';
 
 export class AppError extends Error {
   constructor(public readonly code: string, message: string, public readonly httpStatus = 400) {
@@ -54,8 +55,11 @@ export function decimalUnits(value: string, decimals: number): bigint {
   return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(fraction.padEnd(decimals, '0') || '0');
 }
 
-export function normalizeTxHash(hash: string, kind: 'tron' | 'evm'): string {
+export function normalizeTxHash(hash: string, kind: 'tron' | 'evm' | 'solana'): string {
   if (kind === 'evm' && /^0x[0-9a-fA-F]{64}$/.test(hash)) return hash.toLowerCase();
   if (kind === 'tron' && /^(?:0x)?[0-9a-fA-F]{64}$/.test(hash)) return hash.replace(/^0x/, '').toLowerCase();
+  if (kind === 'solana') {
+    try { return solanaSignature(hash); } catch { /* Return the same safe API error as other networks. */ }
+  }
   throw new AppError('INVALID_TX_HASH', '交易哈希格式与来源网络不符。');
 }

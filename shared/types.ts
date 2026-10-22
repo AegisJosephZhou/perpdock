@@ -3,13 +3,16 @@ import type { AttributionConfig } from './attribution.js';
 export type OrderStatus = 'awaiting_signature' | 'source_pending' | 'bridging' | 'verifying_credit' | 'completed' | 'attention' | 'expired';
 export interface Route {
   id: string; label: string; sourceChain: string; sourceChainId: number;
-  sourceToken: string; symbol: string; decimals: number; walletType: 'evm' | 'tron';
+  sourceToken: string; symbol: string; decimals: number; walletType: 'evm' | 'tron' | 'solana';
   available: boolean; reason?: string; gasSymbol?: string; assetNote?: string;
 }
 export interface QuoteRequest { routeId: string; amount: string; sourceAddress: string; recipient: string }
+export interface SolanaInstruction { programId: string; keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[]; data: string }
+export interface SolanaTransaction { kind: 'solana'; chainId: number; instructions: SolanaInstruction[] }
 export type WalletTransaction =
   | { kind: 'evm'; chainId: number; to: string; data: string; value: string }
-  | { kind: 'tron'; transaction: unknown; contractAddress?: string };
+  | { kind: 'tron'; transaction: unknown; contractAddress?: string }
+  | SolanaTransaction;
 export interface Quote {
   id: string; routeId: string; sourceAddress: string; recipient: string; amount: string;
   amountBaseUnits: string; expectedReceive: string; minReceive: string; expiresAt: string;

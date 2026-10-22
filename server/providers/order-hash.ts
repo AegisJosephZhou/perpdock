@@ -1,9 +1,10 @@
 import { hashStruct, type Hex, type TypedData } from 'viem';
 import { tronHex } from '../chain/tron.js';
+import { solanaAddressBytes } from '../../shared/solana.js';
 
 // Independent implementation of Relay's published v1 order encoding, checked against
 // @relay-protocol/settlement-sdk 0.0.147 in tests. See ORDER-HASH-SOURCES.md.
-export type VmType = 'ethereum-vm' | 'tron-vm' | 'hyperliquid-vm';
+export type VmType = 'ethereum-vm' | 'tron-vm' | 'hyperliquid-vm' | 'solana-vm';
 interface Refund { chainId: string; recipient: string; currency: string; minimumAmount: string; deadline: number; extraData: string }
 export interface RelayOrder {
   version: string; solverChainId: string; solver: string; salt: string;
@@ -30,6 +31,7 @@ export function getOrderId(order: RelayOrder, vms: Record<string, VmType>): Hex 
   const address = (value: string, chain: string): Hex => {
     const vm = vms[chain];
     if (vm === 'tron-vm') return `0x${tronHex(value)}`;
+    if (vm === 'solana-vm') return `0x${Buffer.from(solanaAddressBytes(value)).toString('hex')}`;
     const hex = checkedBytes(value);
     if (vm === 'ethereum-vm' && hex.length === 42) return hex;
     if (vm === 'hyperliquid-vm' && hex.length >= 4 && hex.length <= 42) return hex;

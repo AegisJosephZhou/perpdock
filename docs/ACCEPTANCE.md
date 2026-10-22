@@ -1,5 +1,19 @@
 # 验收记录
 
+## 2026-10-22：Solana 原生 USDC
+
+新增 Solana 原生 USDC → Hyperliquid 默认 Perps，Phantom / Solflare 浏览器扩展路径；范围与 RPC 限制见 [Solana 说明](SOLANA.md)。当前代码八个网络、十条路线，前轮中英文与可选归因保留。
+
+Node 24.19.0 最终结果：**705/705 应用测试（31 文件，无跳过）、44/44 部署工具检查、TypeScript、Vite 生产构建及服务端编译通过**。覆盖协议 SDK 差分、完整指令与账户权限、真实签名校验、余额/费用/模拟、账户变化、超时、广播前持久化、base58 大小写隔离、未知广播不重试、SQLite 重启恢复及完成终态冻结。
+
+当日 14:51 PDT 的生产只读 smoke 通过 13 项检查：生产静态资源及精确 CSP、全部十路线真实报价与隔离未签名订单、令牌隔离与幂等、进程重启、SQLite 一致备份和独立还原。新增 Solana 报价通过主网健康、mint、Relay 协议哈希和 solver 签名、单条 deposit 指令绑定。测试进程及临时数据库已清理。
+
+实际 Chrome 加载生产前端并以明确的本地合成配置检查：中英桌面、390×844 界面及无钱包提示通过；另用浏览器测试夹具验证 Buffer、PDA、报价核验及 483 字节未签名 legacy 交易序列化。无应用 JavaScript 错误；第三方 WalletConnect 构建体积及注释提示仍在。
+
+生产依赖审计 0 high/critical、4 moderate；具体依赖链和用途边界见 Solana 说明。该版本未部署、未连接真实用户钱包、未签名或广播资金交易，尚未完成真人 Perps 到账验收。上述通过不能作为线上版本或资金闭环的证明。
+
+以下保留历史时点记录；当前路线与测试数量以上述记录为准。
+
 ## 2026-10-15 WalletConnect 更新
 
 本轮新增六个 EVM 主网的 WalletConnect 扫码连接，保留注入钱包与 TronLink；补充报价按钮禁用原因，并修复未记录付款的过期订单返回重新报价入口。配置与使用范围见 [WalletConnect 说明](WALLETCONNECT.md)。

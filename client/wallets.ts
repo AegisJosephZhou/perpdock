@@ -1,6 +1,7 @@
 import { createPublicClient, custom, decodeFunctionData, encodeFunctionData, erc20Abi, formatUnits, isAddress, parseAbi, parseUnits, type Address, type EIP1193Provider, type Hex } from 'viem';
 import type { Quote, Route } from '../shared/types.js';
 import { REVIEWED_EVM_SOURCES, reviewedEvmSource } from '../shared/route-registry.js';
+import { preflightSolanaPayment, sendSolanaPayment, solanaNativeBalance, solanaTokenBalance, validateSolanaQuote, verifySolanaWallet } from './solana-wallet.js';
 import { connectWalletConnect, disconnectWalletConnect, type WalletConnectOptions } from './walletconnect.js';
 
 export interface BrowserProvider extends Pick<EIP1193Provider, 'request'> {
@@ -159,7 +160,7 @@ export function isWalletRejection(error: unknown): boolean {
   return value?.code === 4001 || /user rejected|user denied|confirmation declined|用户拒绝|取消签名/i.test(value?.message || '') || (!!value?.cause && isWalletRejection(value.cause));
 }
 export function walletAddressEquals(route: Pick<Route, 'walletType'>, first: string, second: string): boolean {
-  return route.walletType === 'tron' ? first === second : first.toLowerCase() === second.toLowerCase();
+  return route.walletType !== 'evm' ? first === second : first.toLowerCase() === second.toLowerCase();
 }
 function validateEvmRoute(route: Route) {
   const entry = reviewedEvmSource(route.id);
@@ -185,12 +186,14 @@ export function validateQuoteContext(quote: Quote, route: Route, sourceAddress: 
   if (!Number.isFinite(Date.parse(quote.expiresAt)) || Date.parse(quote.expiresAt) <= Date.now()) throw new Error('报价已到期。请重新获取报价，不要继续付款。');
   if (quote.transaction.kind !== route.walletType) throw new Error('交易类型与来源网络不一致。');
   if (quote.approval && (!walletAddressEquals(route, quote.approval.token, route.sourceToken) || !/^\d+$/.test(quote.approval.amount) || BigInt(quote.approval.amount) !== BigInt(quote.amountBaseUnits))) throw new Error('授权资产或额度与订单不一致，已阻止签名。');
+  if (quote.transaction.kind === 'solana') validateSolanaQuote(quote, route);
   if (quote.transaction.kind === 'evm') {
     if (quote.transaction.chainId !== route.sourceChainId || !isAddress(quote.transaction.to) || !/^0x[0-9a-f]*$/i.test(quote.transaction.data) || !/^\d+$/.test(quote.transaction.value)) throw new Error('交易网络或参数不正确，已阻止签名。');
     validateEvmDeposit(quote, route);
   }
 }
 async function verifyWallet(route: Route, source: string, selected?: BrowserProvider): Promise<void> {
+  if (route.walletType === 'solana') { verifySolanaWallet(route, source); return; }
   if (route.walletType === 'evm') {
     validateEvmRoute(route);
     const provider = selected || evmProvider();
@@ -205,6 +208,7 @@ async function verifyWallet(route: Route, source: string, selected?: BrowserProv
   }
 }
 export async function sourceBalance(route: Route, source: string): Promise<string> {
+  if (route.walletType === 'solana') return solanaTokenBalance(route, source);
   await verifyWallet(route, source);
   if (route.walletType === 'evm') {
     const provider = evmProvider();
@@ -217,6 +221,7 @@ export async function sourceBalance(route: Route, source: string): Promise<strin
   return formatUnits(BigInt((await contract.balanceOf(source).call()).toString(10)), route.decimals);
 }
 export async function sourceNativeBalance(route: Route, source: string): Promise<string> {
+  if (route.walletType === 'solana') return solanaNativeBalance(route, source);
   validateEvmRoute(route);
   const provider = evmProvider();
   await verifyWallet(route, source, provider);
@@ -240,6 +245,7 @@ async function assertEvmGas(provider: BrowserProvider, quote: Quote, route: Rout
 }
 export async function preflightPayment(quote: Quote, route: Route): Promise<void> {
   validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
+  if (route.walletType === 'solana') return preflightSolanaPayment(quote, route);
   const provider = route.walletType === 'evm' ? evmProvider() : undefined;
   await verifyWallet(route, quote.sourceAddress, provider);
   const balance = await sourceBalance(route, quote.sourceAddress);
@@ -250,10 +256,12 @@ export async function preflightPayment(quote: Quote, route: Route): Promise<void
   validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
 }
 export async function getAllowance(quote: Quote, route: Route): Promise<bigint> {
+  // Solana's reviewed deposit spends exactly this instruction amount; it has no ERC-20 allowance.
+  if (route.walletType === 'solana') { validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient); verifySolanaWallet(route, quote.sourceAddress); return BigInt(quote.amountBaseUnits); }
   if (route.walletType === 'evm') validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
   await verifyWallet(route, quote.sourceAddress);
   const token = quote.approval?.token || route.sourceToken;
-  const spender = quote.approval?.spender || (quote.transaction.kind === 'tron' ? quote.transaction.contractAddress : quote.transaction.to);
+  const spender = quote.approval?.spender || (quote.transaction.kind === 'tron' ? quote.transaction.contractAddress : quote.transaction.kind === 'evm' ? quote.transaction.to : undefined);
   if (!spender || !walletAddressEquals(route, token, route.sourceToken)) throw new Error('无法核验本笔授权对象，请重新获取报价。');
   if (route.walletType === 'evm') {
     const provider = evmProvider();
@@ -337,6 +345,7 @@ async function waitEvmApproval(provider: BrowserProvider, route: Route, source: 
 }
 export async function approveExact(quote: Quote, route: Route, onStep: (message: string) => void): Promise<void> {
   validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
+  if (route.walletType === 'solana') { verifySolanaWallet(route, quote.sourceAddress); return; }
   await verifyWallet(route, quote.sourceAddress);
   const allowance = await getAllowance(quote, route);
   const required = BigInt(quote.amountBaseUnits);
@@ -373,6 +382,7 @@ export async function approveExact(quote: Quote, route: Route, onStep: (message:
 }
 export async function sendPayment(quote: Quote, route: Route, onHash: (hash: string) => void): Promise<string> {
   validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
+  if (quote.transaction.kind === 'solana') return sendSolanaPayment(quote, route, onHash);
   await verifyWallet(route, quote.sourceAddress);
   if (await getAllowance(quote, route) < BigInt(quote.amountBaseUnits)) throw new Error('本笔授权额度不足，请先完成授权。');
   validateQuoteContext(quote, route, quote.sourceAddress, quote.recipient);
